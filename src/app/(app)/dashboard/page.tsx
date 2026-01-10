@@ -117,7 +117,10 @@ export default function DashboardPage() {
     if (!capturesQuery || !ownerId) return;
 
     const applySnapshot = async (snapshot: any) => {
-      const captures = snapshot.docs.map((d: any) => ({ id: d.id, data: d.data() as CaptureDoc }));
+      const captures: Array<{ id: string; data: CaptureDoc }> = snapshot.docs.map((d: any) => ({
+        id: d.id,
+        data: d.data() as CaptureDoc,
+      }));
 
       // Fetch contact names for captures that have resultContactId
       const capturesWithContacts = await Promise.all(

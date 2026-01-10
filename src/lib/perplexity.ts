@@ -138,7 +138,21 @@ export const performDeepResearch = async (contactInfo: {
     messages: [{ role: "user", content: prompt }],
   } as any);
 
-  const content = completion?.choices?.[0]?.message?.content;
+  const rawContent = completion?.choices?.[0]?.message?.content as unknown;
+  const content =
+    typeof rawContent === "string"
+      ? rawContent
+      : Array.isArray(rawContent)
+        ? rawContent
+            .map((part: any) => {
+              if (typeof part === "string") return part;
+              if (part && typeof part.text === "string") return part.text;
+              return "";
+            })
+            .join("")
+            .trim()
+        : `${rawContent ?? ""}`.trim();
+
   if (!content) throw new Error("Perplexity Deep Research returned empty content");
 
   return {
@@ -171,5 +185,5 @@ export const streamDeepResearchConcise = async (contactInfo: {
     stream_mode: "concise",
   } as any);
 
-  return stream as AsyncIterable<any>;
+  return stream as unknown as AsyncIterable<any>;
 };

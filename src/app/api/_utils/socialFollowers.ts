@@ -91,8 +91,12 @@ const chooseBetter = (a: SocialFollower, b: SocialFollower): SocialFollower => {
 };
 
 export const mergeSocialFollowers = (existing: unknown, incoming: unknown): SocialFollower[] | undefined => {
-  const ex = Array.isArray(existing) ? existing.map(normalizeFollower).filter(Boolean) : [];
-  const inc = Array.isArray(incoming) ? incoming.map(normalizeFollower).filter(Boolean) : [];
+  const ex = Array.isArray(existing)
+    ? existing.map(normalizeFollower).filter((v): v is SocialFollower => Boolean(v))
+    : [];
+  const inc = Array.isArray(incoming)
+    ? incoming.map(normalizeFollower).filter((v): v is SocialFollower => Boolean(v))
+    : [];
   if (ex.length === 0 && inc.length === 0) return undefined;
 
   const byPlatform = new Map<SocialPlatform, SocialFollower>();

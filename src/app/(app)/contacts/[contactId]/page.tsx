@@ -67,6 +67,14 @@ type ContactFormState = {
   tagsCsv: string;
 };
 
+const VALID_LEAD_STATUSES = ["not_sure", "cold", "warm", "hot", "customer"] as const;
+type ValidLeadStatus = (typeof VALID_LEAD_STATUSES)[number];
+
+const coerceLeadStatus = (value: unknown): ValidLeadStatus => {
+  if (VALID_LEAD_STATUSES.includes(value as ValidLeadStatus)) return value as ValidLeadStatus;
+  return "not_sure";
+};
+
 const toFormState = (c: ContactDoc): ContactFormState => ({
   fullName: c.fullName ?? "",
   firstName: c.firstName ?? "",
@@ -78,7 +86,8 @@ const toFormState = (c: ContactDoc): ContactFormState => ({
   linkedInUrl: c.linkedInUrl ?? "",
   website: c.website ?? "",
   location: c.location ?? "",
-  leadStatus: (c.leadStatus === "lead" ? "not_sure" : c.leadStatus) ?? "not_sure",
+  // Firestore may contain legacy/unexpected strings; coerce safely for the UI.
+  leadStatus: coerceLeadStatus((c as unknown as { leadStatus?: unknown }).leadStatus),
   summary: c.deepResearchSummary ?? c.notes ?? "",
   tagsCsv: (c.tags ?? []).join(", "),
 });
@@ -845,7 +854,7 @@ export default function ContactDetailPage() {
       await addDoc(collection(db, "notes"), {
         contactId,
         ownerId,
-        crmId: contact.crmId ?? null,
+        crmId: contact.crmId ?? undefined,
         memberIds: finalMemberIds,
         content: newNoteContent.trim(),
         createdAt: nowServerTimestamp(),

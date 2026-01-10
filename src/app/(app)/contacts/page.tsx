@@ -21,6 +21,12 @@ type ContactRow = {
 type FilterType = "all" | "leads" | "customers";
 type LeadStatus = "not_sure" | "cold" | "warm" | "hot" | "customer";
 
+const VALID_LEAD_STATUSES = ["not_sure", "cold", "warm", "hot", "customer"] as const;
+const coerceLeadStatus = (value: unknown): LeadStatus => {
+  if (VALID_LEAD_STATUSES.includes(value as LeadStatus)) return value as LeadStatus;
+  return "not_sure";
+};
+
 const displayName = (c: ContactDoc): string => {
   const name = c.fullName?.trim();
   if (name) return name;
@@ -574,8 +580,8 @@ export default function ContactsPage() {
           <div className="divide-y divide-zinc-200">
             {rows.map(({ id, data }) => {
               const isDeleting = deletingContactId === id;
-              const status = ((data.leadStatus === "lead" ? "not_sure" : data.leadStatus) ??
-                "not_sure") as LeadStatus;
+              // Firestore may contain legacy/unexpected strings; coerce safely for the UI.
+              const status = coerceLeadStatus((data as unknown as { leadStatus?: unknown }).leadStatus);
               const avatarPath = data.profileImagePath?.trim() || null;
               const avatarUrl = avatarPath ? avatarUrlByPath[avatarPath] : undefined;
               return (

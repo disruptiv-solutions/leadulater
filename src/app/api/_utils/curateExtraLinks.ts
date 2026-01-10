@@ -40,12 +40,15 @@ const uniqByUrl = (items: Candidate[]): Candidate[] => {
 
 const toExtraLinks = (links: unknown): ExtraLink[] => {
   if (!Array.isArray(links)) return [];
-  return links
-    .map((l: any) => ({
-      label: `${l?.label ?? ""}`.trim(),
-      url: normalizeUrl(l?.url),
-    }))
-    .filter((l) => l.label.length > 0 && l.url.length > 0);
+  const normalized = links.map((l: any) => {
+    const label = `${l?.label ?? ""}`.trim();
+    const url = normalizeUrl(l?.url);
+    return { label, url };
+  });
+
+  return normalized
+    .filter((l): l is ExtraLink => l.label.length > 0 && typeof l.url === "string" && l.url.length > 0)
+    .map((l) => ({ label: l.label, url: l.url }));
 };
 
 export async function curateExtraLinks(args: {
