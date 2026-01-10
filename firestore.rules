@@ -1,0 +1,140 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(ownerId) {
+      return signedIn() && request.auth.uid == ownerId;
+    }
+
+    function immutableWorkspaceFieldsUnchanged() {
+      // Disallow client-side changes to workspace identity fields.
+      return !request.resource.data.diff(resource.data).changedKeys().hasAny(['crmId', 'memberIds']);
+    }
+
+    match /users/{uid} {
+      allow read, write: if isOwner(uid);
+    }
+
+    match /crms/{crmId} {
+      // Members can read a CRM (ownerId is always in memberIds via repair function)
+      allow read: if request.auth != null
+        && resource != null
+        && resource.data.memberIds != null
+        && request.auth.uid in resource.data.memberIds;
+
+      allow create: if signedIn()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.memberIds != null
+        && request.auth.uid in request.resource.data.memberIds;
+
+      // Only the CRM owner can rename/manage members
+      allow update: if signedIn()
+        && resource != null
+        && isOwner(resource.data.ownerId)
+        && request.resource.data.ownerId == resource.data.ownerId;
+
+      allow delete: if signedIn() && resource != null && isOwner(resource.data.ownerId);
+    }
+
+    match /captures/{captureId} {
+      // Allow create if user is authenticated and ownerId matches
+      allow create: if signedIn()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.crmId is string
+        && request.resource.data.crmId.size() > 0
+        && request.resource.data.memberIds != null
+        && request.auth.uid in request.resource.data.memberIds
+        && request.resource.data.status in ['queued', 'processing', 'researching', 'ready', 'error'];
+
+      // Allow read if document exists and user is a member (ownerId is always in memberIds via repair function)
+      allow read: if request.auth != null
+        && resource != null
+        && resource.data.memberIds != null
+        && request.auth.uid in resource.data.memberIds;
+
+      // Allow update if user is a member and immutable fields don't change
+      allow update: if signedIn()
+        && resource != null
+        && resource.data.memberIds != null
+        && request.auth.uid in resource.data.memberIds
+        && request.resource.data.ownerId == resource.data.ownerId
+        && immutableWorkspaceFieldsUnchanged();
+
+      // Allow delete if user is a member
+      allow delete: if signedIn()
+        && resource != null
+        && resource.data.memberIds != null
+        && request.auth.uid in resource.data.memberIds;
+    }
+
+    match /contacts/{contactId} {
+      // Allow create if user is authenticated and ownerId matches
+      allow create: if signedIn()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.crmId is string
+        && request.resource.data.crmId.size() > 0
+        && request.resource.data.memberIds != null
+        && request.auth.uid in request.resource.data.memberIds;
+
+      // Allow read if document exists and user is a member (ownerId is always in memberIds via repair function)
+      allow read: if request.auth != null
+        && resource != null
+        && resource.data.memberIds != null
+        && request.auth.uid in resource.data.memberIds;
+
+      // Allow update if user is a member and immutable fields don't change
+      allow update: if signedIn()
+        && resource != null
+        && resource.data.memberIds != null
+        && request.auth.uid in resource.data.memberIds
+        && request.resource.data.ownerId == resource.data.ownerId
+        && immutableWorkspaceFieldsUnchanged();
+
+      // Allow delete if user is a member
+      allow delete: if signedIn()
+        && resource != null
+        && resource.data.memberIds != null
+        && request.auth.uid in resource.data.memberIds;
+    }
+
+    match /notes/{noteId} {
+      // Allow create if user is authenticated and ownerId matches
+      allow create: if signedIn()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.contactId is string
+        && request.resource.data.contactId.size() > 0
+        && request.resource.data.content is string
+        && request.resource.data.content.size() > 0
+        && request.resource.data.memberIds != null
+        && request.auth.uid in request.resource.data.memberIds;
+
+      // Allow read if document exists and user is a member (ownerId is always in memberIds via repair function)
+      allow read: if request.auth != null
+        && resource != null
+        && resource.data.memberIds != null
+        && request.auth.uid in resource.data.memberIds;
+
+      // Allow update if user is a member and immutable fields don't change
+      allow update: if signedIn()
+        && resource != null
+        && resource.data.memberIds != null
+        && request.auth.uid in resource.data.memberIds
+        && request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.contactId == resource.data.contactId
+        && request.resource.data.content is string
+        && request.resource.data.content.size() > 0;
+
+      // Allow delete if user is a member
+      allow delete: if signedIn()
+        && resource != null
+        && resource.data.memberIds != null
+        && request.auth.uid in resource.data.memberIds;
+    }
+  }
+}
+

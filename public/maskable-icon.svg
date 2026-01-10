@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="CRM Companion maskable icon">
+  <rect width="512" height="512" fill="#0a0a0a"/>
+  <circle cx="256" cy="256" r="210" fill="#ffffff" opacity="0.10"/>
+  <path d="M168 204c0-19.9 16.1-36 36-36h104c19.9 0 36 16.1 36 36v104c0 19.9-16.1 36-36 36H204c-19.9 0-36-16.1-36-36V204z" fill="#ffffff"/>
+  <path d="M206 248h100a10 10 0 0 1 0 20H206a10 10 0 0 1 0-20z" fill="#0a0a0a"/>
+  <path d="M206 282h64a10 10 0 0 1 0 20h-64a10 10 0 0 1 0-20z" fill="#0a0a0a" opacity="0.8"/>
+</svg>
+

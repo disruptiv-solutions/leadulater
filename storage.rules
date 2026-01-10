@@ -1,0 +1,71 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function isAllowedImageType() {
+      return request.resource != null
+        && request.resource.contentType in ['image/png', 'image/jpeg', 'image/webp'];
+    }
+
+    function isAllowedSize() {
+      return request.resource != null && request.resource.size < 10 * 1024 * 1024;
+    }
+
+    function isContactMember(contactId) {
+      return signedIn()
+        && firestore.exists(/databases/(default)/documents/contacts/$(contactId))
+        && firestore.get(/databases/(default)/documents/contacts/$(contactId)).data.memberIds is list
+        && firestore.get(/databases/(default)/documents/contacts/$(contactId)).data.memberIds.hasAny([request.auth.uid]);
+    }
+
+    function contactOwnerId(contactId) {
+      return firestore.get(/databases/(default)/documents/contacts/$(contactId)).data.ownerId;
+    }
+
+    match /users/{uid}/captures/{captureId}/{fileName} {
+      // Allow read if user is owner
+      allow read: if isOwner(uid);
+
+      // Allow write (create/update) if user is owner and file meets requirements
+      allow write: if isOwner(uid)
+        && fileName.matches('img_[1-6]\\.(png|jpg|jpeg|webp)')
+        && isAllowedImageType()
+        && isAllowedSize();
+
+      // Allow delete if user is owner
+      allow delete: if isOwner(uid);
+    }
+
+    // Contact research images (saved from Perplexity results)
+    match /users/{uid}/contacts/{contactId}/research/{fileName} {
+      // Allow read for CRM members. Owner segment must match the contact's ownerId.
+      allow read: if isContactMember(contactId) && uid == contactOwnerId(contactId);
+      allow delete: if isOwner(uid);
+      // writes happen server-side via Admin SDK; we don't need a client write rule
+      allow write: if false;
+    }
+
+    // Contact avatar/profile photo
+    match /users/{uid}/contacts/{contactId}/avatar/{fileName} {
+      // Owner segment must match the contact's ownerId.
+      allow read: if isContactMember(contactId) && uid == contactOwnerId(contactId);
+
+      // Allow CRM members to upload/update the avatar (with file constraints).
+      allow write: if isContactMember(contactId)
+        && uid == contactOwnerId(contactId)
+        && fileName.matches('avatar\\.(png|jpg|jpeg|webp)')
+        && isAllowedImageType()
+        && isAllowedSize();
+
+      allow delete: if isOwner(uid);
+    }
+  }
+}
+

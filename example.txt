@@ -1,0 +1,15 @@
+# Example only (dummy values). Do NOT commit real keys.
+# Copy env.example -> .env.local and replace the values with your real Firebase config.
+
+NEXT_PUBLIC_FIREBASE_API_KEY=YOUR_FIREBASE_API_KEY
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=leadulater.firebaseapp.com
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=leadulater
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=leadulater.appspot.com
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=577930011082
+NEXT_PUBLIC_FIREBASE_APP_ID=1:577930011082:web:EXAMPLE_APP_ID_REPLACE_ME
+
+# Cloud Functions (OpenRouter)
+# Copy functions/env.example -> functions/.env and replace with your real key.
+OPENROUTER_API_KEY=YOUR_OPENROUTER_API_KEY
+OPENROUTER_MODEL=google/gemini-3-flash-preview
+
