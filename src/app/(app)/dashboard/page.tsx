@@ -78,6 +78,7 @@ const computeRevenue = (contacts: ContactDoc[]): RevenueStats => {
   let contactsWithPotential = 0;
 
   for (const c of contacts) {
+    const status = `${(c as any)?.leadStatus ?? ""}`.trim();
     const listRaw = (c as any)?.purchases;
     const list = Array.isArray(listRaw)
       ? listRaw.map(normalizePurchase).filter((p): p is ContactPurchase => Boolean(p))
@@ -95,10 +96,14 @@ const computeRevenue = (contacts: ContactDoc[]): RevenueStats => {
       const currency = currencyRaw.trim().toUpperCase() || "—";
 
       if (p.stage === "converted") {
+        // Only count as "actual revenue" when the contact is marked Converted
+        if (status !== "customer") continue;
         actualTotals.set(currency, (actualTotals.get(currency) ?? 0) + amount);
         actualItems += 1;
         hasActual = true;
       } else if (p.stage === "possible") {
+        // Only count as "potential" when the contact is Warm/Hot
+        if (status !== "warm" && status !== "hot") continue;
         potentialTotals.set(currency, (potentialTotals.get(currency) ?? 0) + amount);
         potentialItems += 1;
         hasPotential = true;

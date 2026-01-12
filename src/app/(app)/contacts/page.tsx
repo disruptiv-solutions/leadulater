@@ -80,6 +80,39 @@ const leadStatusSelectClass = (v: LeadStatus): string => {
   }
 };
 
+type RevenueBadge = { kind: "converted" | "potential"; label: string };
+
+const computeRevenueBadge = (c: ContactDoc): RevenueBadge | null => {
+  const purchases = (c as any)?.purchases;
+  if (!Array.isArray(purchases)) return null;
+
+  let converted = 0;
+  let potential = 0;
+
+  for (const raw of purchases) {
+    if (!raw || typeof raw !== "object") continue;
+    const p = raw as any;
+    const amount = p?.amount;
+    if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) continue;
+
+    const stage = `${p?.stage ?? ""}`.trim();
+    if (stage === "converted") converted += amount;
+    if (stage === "possible") potential += amount;
+  }
+
+  const fmt = (n: number) => {
+    try {
+      return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(n);
+    } catch {
+      return `${n}`;
+    }
+  };
+
+  if (converted > 0) return { kind: "converted", label: fmt(converted) };
+  if (potential > 0) return { kind: "potential", label: fmt(potential) };
+  return null;
+};
+
 const avatarLetter = (c: ContactDoc): string => {
   const base =
     c.fullName?.trim() ||
@@ -635,7 +668,8 @@ export default function ContactsPage() {
           </div>
           <div className="col-span-3">Name</div>
           <div className="col-span-3">Company</div>
-          <div className="col-span-3">Email</div>
+          <div className="col-span-2">Email</div>
+          <div className="col-span-1 text-right">Revenue</div>
           <div className="col-span-2 text-right">Status</div>
         </div>
 
@@ -647,6 +681,7 @@ export default function ContactsPage() {
               const isDeleting = deletingContactId === id;
               // Firestore may contain legacy/unexpected strings; coerce safely for the UI.
               const status = coerceLeadStatus((data as unknown as { leadStatus?: unknown }).leadStatus);
+              const revenue = computeRevenueBadge(data);
               const avatarPath = data.profileImagePath?.trim() || null;
               const avatarUrl = avatarPath ? avatarUrlByPath[avatarPath] : undefined;
               return (
@@ -693,10 +728,32 @@ export default function ContactsPage() {
                   </Link>
                   <Link
                     href={`/contacts/${id}`}
-                    className="col-span-3 truncate text-zinc-700"
+                    className="col-span-2 truncate text-zinc-700"
                   >
                     {data.email?.trim() || "—"}
                   </Link>
+                  <div className="col-span-1 flex items-center justify-end">
+                    {revenue ? (
+                      <span
+                        className={[
+                          "inline-flex items-center rounded-full px-2 py-1 text-xs font-semibold",
+                          revenue.kind === "converted"
+                            ? "bg-emerald-100 text-emerald-900"
+                            : "bg-sky-100 text-sky-900",
+                        ].join(" ")}
+                        aria-label={
+                          revenue.kind === "converted"
+                            ? `Converted revenue ${revenue.label}`
+                            : `Potential revenue ${revenue.label}`
+                        }
+                        title={revenue.kind === "converted" ? "Converted revenue" : "Potential revenue"}
+                      >
+                        {revenue.label}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-zinc-400">—</span>
+                    )}
+                  </div>
                   <div className="col-span-2 flex items-center justify-end gap-2">
                     <select
                       value={status}
