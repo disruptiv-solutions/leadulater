@@ -97,6 +97,7 @@ export default function ContactsPage() {
   const [rows, setRows] = useState<ContactRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [filter, setFilter] = useState<FilterType>("all");
+  const [searchText, setSearchText] = useState<string>("");
   const [deletingContactId, setDeletingContactId] = useState<string | null>(null);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -234,18 +235,52 @@ export default function ContactsPage() {
     };
   }, [avatarUrlByPath, rows]);
 
+  const normalizedSearch = useMemo(() => searchText.trim().toLowerCase(), [searchText]);
+
+  const visibleRows = useMemo(() => {
+    if (!normalizedSearch) return rows;
+    return rows.filter(({ data }) => {
+      const haystack = [
+        displayName(data),
+        data.companyName ?? "",
+        data.email ?? "",
+        data.phone ?? "",
+        data.jobTitle ?? "",
+        data.website ?? "",
+        data.linkedInUrl ?? "",
+        ...(Array.isArray(data.tags) ? data.tags : []),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(normalizedSearch);
+    });
+  }, [normalizedSearch, rows]);
+
+  // Keep selection only for currently visible rows (avoid bulk actions on hidden rows when searching).
+  useEffect(() => {
+    const visible = new Set(visibleRows.map((r) => r.id));
+    setSelectedIds((prev) => {
+      const next: Record<string, true> = {};
+      for (const id of Object.keys(prev)) {
+        if (visible.has(id)) next[id] = true;
+      }
+      return next;
+    });
+  }, [visibleRows]);
+
   const filteredCount = rows.length;
+  const visibleCount = visibleRows.length;
   const selectedCount = Object.keys(selectedIds).length;
-  const allSelectedOnPage = rows.length > 0 && selectedCount === rows.length;
+  const allSelectedOnPage = visibleRows.length > 0 && selectedCount === visibleRows.length;
 
   const toggleSelectAllOnPage = () => {
-    if (rows.length === 0) return;
+    if (visibleRows.length === 0) return;
     if (allSelectedOnPage) {
       setSelectedIds({});
       return;
     }
     const next: Record<string, true> = {};
-    for (const r of rows) next[r.id] = true;
+    for (const r of visibleRows) next[r.id] = true;
     setSelectedIds(next);
   };
 
@@ -446,9 +481,12 @@ export default function ContactsPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Contacts</h1>
           <p className="mt-1 text-sm text-zinc-600">
-            {filter === "all" && `${filteredCount} total`}
-            {filter === "leads" && `${filteredCount} lead${filteredCount !== 1 ? "s" : ""}`}
-            {filter === "customers" && `${filteredCount} customer${filteredCount !== 1 ? "s" : ""}`}
+            {filter === "all" &&
+              `${visibleCount}${normalizedSearch ? ` match${visibleCount !== 1 ? "es" : ""} of ${filteredCount}` : " total"}`}
+            {filter === "leads" &&
+              `${visibleCount}${normalizedSearch ? ` match${visibleCount !== 1 ? "es" : ""} of ${filteredCount}` : ` lead${filteredCount !== 1 ? "s" : ""}`}`}
+            {filter === "customers" &&
+              `${visibleCount}${normalizedSearch ? ` match${visibleCount !== 1 ? "es" : ""} of ${filteredCount}` : ` customer${filteredCount !== 1 ? "s" : ""}`}`}
             {filteredCount >= 200 && " (showing first 200)"}
           </p>
         </div>
@@ -510,6 +548,33 @@ export default function ContactsPage() {
         >
           Customers
         </button>
+      </div>
+
+      {/* Search */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex-1">
+          <label className="sr-only" htmlFor="contacts-search">
+            Search contacts
+          </label>
+          <input
+            id="contacts-search"
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-400"
+            placeholder="Search by name, company, email, tags…"
+            aria-label="Search contacts"
+          />
+        </div>
+        {normalizedSearch ? (
+          <button
+            type="button"
+            onClick={() => setSearchText("")}
+            className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-medium text-zinc-900 hover:bg-zinc-100"
+            aria-label="Clear search"
+          >
+            Clear
+          </button>
+        ) : null}
       </div>
 
       {/* Bulk actions */}
@@ -576,9 +641,9 @@ export default function ContactsPage() {
 
         {isLoading ? (
           <div className="px-4 py-10 text-center text-sm text-zinc-600">Loading…</div>
-        ) : rows.length ? (
+        ) : visibleRows.length ? (
           <div className="divide-y divide-zinc-200">
-            {rows.map(({ id, data }) => {
+            {visibleRows.map(({ id, data }) => {
               const isDeleting = deletingContactId === id;
               // Firestore may contain legacy/unexpected strings; coerce safely for the UI.
               const status = coerceLeadStatus((data as unknown as { leadStatus?: unknown }).leadStatus);
@@ -680,11 +745,28 @@ export default function ContactsPage() {
           </div>
         ) : (
           <div className="px-4 py-10 text-center text-sm text-zinc-600">
-            No contacts yet. Start with{" "}
-            <Link href="/companion" className="font-medium text-zinc-900 underline">
-              Quick Capture
-            </Link>
-            .
+            {normalizedSearch ? (
+              <>
+                No matches for <span className="font-medium">“{searchText.trim()}”</span>.{" "}
+                <button
+                  type="button"
+                  onClick={() => setSearchText("")}
+                  className="font-medium text-zinc-900 underline"
+                  aria-label="Clear search"
+                >
+                  Clear search
+                </button>
+                .
+              </>
+            ) : (
+              <>
+                No contacts yet. Start with{" "}
+                <Link href="/companion" className="font-medium text-zinc-900 underline">
+                  Quick Capture
+                </Link>
+                .
+              </>
+            )}
           </div>
         )}
       </div>
