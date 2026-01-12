@@ -79,6 +79,18 @@ export type ContactPurchase = {
   updatedAtMs?: number | null;
 };
 
+export type ProductDoc = {
+  ownerId: string;
+  crmId?: string;
+  memberIds?: string[];
+  createdAt: unknown;
+  updatedAt: unknown;
+  name: string;
+  cadence: PurchaseCadence;
+  amount?: number | null;
+  currency?: string | null;
+};
+
 export type ContactDoc = {
   ownerId: string;
   crmId?: string;

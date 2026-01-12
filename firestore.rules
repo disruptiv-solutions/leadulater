@@ -135,6 +135,35 @@ service cloud.firestore {
         && resource.data.memberIds != null
         && request.auth.uid in resource.data.memberIds;
     }
+
+    match /products/{productId} {
+      // Members can read products in their CRM scope
+      allow read: if request.auth != null
+        && resource != null
+        && resource.data.memberIds != null
+        && request.auth.uid in resource.data.memberIds;
+
+      allow create: if signedIn()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.crmId is string
+        && request.resource.data.crmId.size() > 0
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.memberIds != null
+        && request.auth.uid in request.resource.data.memberIds;
+
+      allow update: if signedIn()
+        && resource != null
+        && resource.data.memberIds != null
+        && request.auth.uid in resource.data.memberIds
+        && request.resource.data.ownerId == resource.data.ownerId
+        && immutableWorkspaceFieldsUnchanged();
+
+      allow delete: if signedIn()
+        && resource != null
+        && resource.data.memberIds != null
+        && request.auth.uid in resource.data.memberIds;
+    }
   }
 }
 

@@ -10,6 +10,7 @@ import {
   deleteDoc,
   doc,
   documentId,
+  getDocs,
   limit,
   onSnapshot,
   orderBy,
@@ -24,7 +25,7 @@ import remarkGfm from "remark-gfm";
 import { db, nowServerTimestamp } from "@/lib/firebase/firestore";
 import { storage } from "@/lib/firebase/storage";
 import { useAuth } from "@/lib/hooks/useAuth";
-import type { ContactDoc, ContactPurchase, NoteDoc, PurchaseCadence, PurchaseStage } from "@/lib/types";
+import type { ContactDoc, ContactPurchase, NoteDoc, ProductDoc, PurchaseCadence, PurchaseStage } from "@/lib/types";
 import type { SocialFollower, SocialFollowerMetric, SocialPlatform } from "@/lib/types";
 import { getIdToken } from "firebase/auth";
 import { getFirebaseAuth } from "@/lib/firebase/auth";
@@ -166,6 +167,14 @@ const normalizeContactPurchase = (raw: unknown): ContactPurchase | null => {
   };
 };
 
+const normalizeProduct = (raw: unknown): ProductDoc | null => {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as any;
+  if (typeof obj.name !== "string" || !obj.name.trim()) return null;
+  if (typeof obj.cadence !== "string") return null;
+  return obj as ProductDoc;
+};
+
 type AudienceDraft = {
   platform: SocialPlatform;
   countInput: string;
@@ -182,6 +191,8 @@ type PurchaseDraft = {
   currency: string;
   notes: string;
 };
+
+type ProductRow = { id: string; data: ProductDoc };
 
 const parseCountInput = (raw: string): number | null => {
   const v = raw.trim().toLowerCase().replace(/,/g, "");
@@ -320,12 +331,49 @@ export default function ContactDetailPage() {
   const [purchaseEditingId, setPurchaseEditingId] = useState<string | null>(null);
   const [purchaseIsSaving, setPurchaseIsSaving] = useState<boolean>(false);
   const [purchaseError, setPurchaseError] = useState<string | null>(null);
+  const [products, setProducts] = useState<ProductRow[]>([]);
+  const [productsIsLoading, setProductsIsLoading] = useState<boolean>(false);
+  const [productsError, setProductsError] = useState<string | null>(null);
+  const [selectedProductId, setSelectedProductId] = useState<string>("");
+  const [isSavingProduct, setIsSavingProduct] = useState<boolean>(false);
 
   useEffect(() => {
     return () => {
       addInfoImages.forEach((img) => URL.revokeObjectURL(img.previewUrl));
     };
   }, [addInfoImages]);
+
+  useEffect(() => {
+    if (!ownerId || !contact) return;
+    const crmId = contact.crmId?.trim();
+    if (!crmId) return;
+
+    setProductsIsLoading(true);
+    setProductsError(null);
+    const productsQ = query(
+      collection(db, "products"),
+      where("memberIds", "array-contains", ownerId),
+      where("crmId", "==", crmId),
+      orderBy("updatedAt", "desc"),
+      limit(200),
+    );
+
+    const unsubscribe = onSnapshot(
+      productsQ,
+      (snapshot) => {
+        setProductsIsLoading(false);
+        setProducts(snapshot.docs.map((d) => ({ id: d.id, data: d.data() as ProductDoc })));
+      },
+      (err) => {
+        setProductsIsLoading(false);
+        const anyErr = err as unknown as { message?: string };
+        setProductsError(anyErr?.message ?? "Failed to load products");
+        setProducts([]);
+      },
+    );
+
+    return () => unsubscribe();
+  }, [contact, ownerId]);
 
   const sanitizeThink = (text: string): string => {
     // Remove <think> blocks if present in streamed content
@@ -378,6 +426,7 @@ export default function ContactDetailPage() {
   const handleOpenAddPurchase = (stageOverride?: PurchaseStage) => {
     setPurchaseError(null);
     setPurchaseEditingId(null);
+    setSelectedProductId("");
     setPurchaseStage(stageOverride ?? defaultPurchaseStageForLeadStatus(form?.leadStatus ?? "not_sure"));
     resetPurchaseDraft("monthly");
     setShowPurchaseModal(true);
@@ -400,6 +449,7 @@ export default function ContactDetailPage() {
   const handleOpenEditPurchase = (p: ContactPurchase) => {
     setPurchaseError(null);
     setPurchaseEditingId(p.id);
+    setSelectedProductId("");
     setPurchaseStage(p.stage);
     setPurchaseDraft({
       cadence: p.cadence,
@@ -575,6 +625,76 @@ export default function ContactDetailPage() {
       setPurchaseError(message);
     } finally {
       setPurchaseIsSaving(false);
+    }
+  };
+
+  const handleApplyProduct = (productId: string) => {
+    setSelectedProductId(productId);
+    const row = products.find((p) => p.id === productId);
+    const product = row ? normalizeProduct(row.data) : null;
+    if (!product) return;
+
+    setPurchaseDraft((prev) => ({
+      ...prev,
+      cadence: product.cadence,
+      name: product.name ?? prev.name,
+      amountInput: typeof product.amount === "number" && Number.isFinite(product.amount) ? `${product.amount}` : prev.amountInput,
+      currency: typeof product.currency === "string" ? product.currency : prev.currency,
+    }));
+  };
+
+  const handleSaveProductFromDraft = async () => {
+    if (!contact || !ownerId) return;
+    const canEdit = contact.ownerId === ownerId || contact.memberIds?.includes(ownerId);
+    if (!canEdit) return;
+
+    const crmId = contact.crmId?.trim();
+    if (!crmId) {
+      setPurchaseError("This contact is missing a CRM. Please re-open after selecting a CRM.");
+      return;
+    }
+
+    const name = purchaseDraft.name.trim();
+    if (!name) {
+      setPurchaseError("Enter a name first, then click “Save as product”.");
+      return;
+    }
+
+    const amountRaw = purchaseDraft.amountInput.trim().replace(/,/g, "");
+    let amount: number | undefined = undefined;
+    if (amountRaw.length) {
+      const parsed = Number(amountRaw);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        setPurchaseError("Amount must be a valid non-negative number (or leave it blank).");
+        return;
+      }
+      amount = parsed;
+    }
+
+    const currency = purchaseDraft.currency.trim().toUpperCase();
+    const memberIds = contact.memberIds ?? [ownerId];
+    const finalMemberIds = memberIds.includes(ownerId) ? memberIds : [...memberIds, ownerId];
+
+    setIsSavingProduct(true);
+    setPurchaseError(null);
+    try {
+      const ref = await addDoc(collection(db, "products"), {
+        ownerId,
+        crmId,
+        memberIds: finalMemberIds,
+        name,
+        cadence: purchaseDraft.cadence,
+        ...(typeof amount === "number" ? { amount } : {}),
+        ...(currency ? { currency } : {}),
+        createdAt: nowServerTimestamp(),
+        updatedAt: nowServerTimestamp(),
+      } satisfies Omit<ProductDoc, "createdAt" | "updatedAt"> & { createdAt: unknown; updatedAt: unknown });
+
+      handleApplyProduct(ref.id);
+    } catch (err) {
+      setPurchaseError(err instanceof Error ? err.message : "Failed to save product");
+    } finally {
+      setIsSavingProduct(false);
     }
   };
 
@@ -1942,6 +2062,48 @@ export default function ContactDetailPage() {
                   <div className="mt-1 text-xs text-zinc-600">{stageLabel(purchaseStage)}</div>
 
                   <div className="mt-4 grid gap-3">
+                    <label className="block">
+                      <div className="text-xs font-medium text-zinc-700">Product (quick fill)</div>
+                      <select
+                        value={selectedProductId}
+                        onChange={(e) => {
+                          const id = e.target.value;
+                          if (!id) {
+                            setSelectedProductId("");
+                            return;
+                          }
+                          handleApplyProduct(id);
+                        }}
+                        className="mt-1 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-400"
+                        aria-label="Select a saved product"
+                      >
+                        <option value="">Custom (no saved product)</option>
+                        {products.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.data.name} · {cadenceLabel(p.data.cadence)}
+                            {typeof p.data.amount === "number"
+                              ? ` · ${p.data.currency?.trim() ? `${p.data.currency.trim().toUpperCase()} ` : ""}${p.data.amount}`
+                              : ""}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="mt-2 flex items-center justify-between gap-2">
+                        <div className="text-[11px] text-zinc-500">
+                          {productsIsLoading ? "Loading products…" : productsError ? productsError : `${products.length} saved`}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleSaveProductFromDraft}
+                          disabled={isSavingProduct || !purchaseDraft.name.trim()}
+                          className="rounded-lg border border-zinc-200 bg-white px-2 py-1 text-xs font-medium text-zinc-900 hover:bg-zinc-100 disabled:opacity-50"
+                          aria-label="Save current fields as a reusable product"
+                          title="Save current fields as a reusable product"
+                        >
+                          {isSavingProduct ? "Saving…" : "Save as product"}
+                        </button>
+                      </div>
+                    </label>
+
                     <label className="block">
                       <div className="text-xs font-medium text-zinc-700">Type</div>
                       <select
