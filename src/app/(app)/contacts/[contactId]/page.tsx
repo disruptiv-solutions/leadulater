@@ -24,7 +24,7 @@ import remarkGfm from "remark-gfm";
 import { db, nowServerTimestamp } from "@/lib/firebase/firestore";
 import { storage } from "@/lib/firebase/storage";
 import { useAuth } from "@/lib/hooks/useAuth";
-import type { ContactDoc, NoteDoc } from "@/lib/types";
+import type { ContactDoc, ContactPurchase, NoteDoc, PurchaseCadence, PurchaseStage } from "@/lib/types";
 import type { SocialFollower, SocialFollowerMetric, SocialPlatform } from "@/lib/types";
 import { getIdToken } from "firebase/auth";
 import { getFirebaseAuth } from "@/lib/firebase/auth";
@@ -118,6 +118,54 @@ const formatCompact = (n: number): string => {
   }
 };
 
+const PURCHASE_CADENCES = ["monthly", "yearly", "one_off"] as const satisfies readonly PurchaseCadence[];
+const PURCHASE_STAGES = ["possible", "converted"] as const satisfies readonly PurchaseStage[];
+
+const cadenceLabel = (c: PurchaseCadence): string => {
+  if (c === "monthly") return "Monthly subscription";
+  if (c === "yearly") return "Yearly subscription";
+  return "One-off";
+};
+
+const stageLabel = (s: PurchaseStage): string => (s === "converted" ? "Converted sale" : "Possible purchase");
+
+const normalizeCadence = (value: unknown): PurchaseCadence => {
+  if (PURCHASE_CADENCES.includes(value as PurchaseCadence)) return value as PurchaseCadence;
+  return "one_off";
+};
+
+const normalizeStage = (value: unknown): PurchaseStage => {
+  if (PURCHASE_STAGES.includes(value as PurchaseStage)) return value as PurchaseStage;
+  return "possible";
+};
+
+const normalizeContactPurchase = (raw: unknown): ContactPurchase | null => {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as any;
+
+  const id = typeof obj.id === "string" ? obj.id.trim() : "";
+  const name = typeof obj.name === "string" ? obj.name.trim() : "";
+  if (!id || !name) return null;
+
+  const cadence = normalizeCadence(obj.cadence);
+  const stage = normalizeStage(obj.stage);
+  const amount = typeof obj.amount === "number" ? obj.amount : Number(`${obj.amount ?? ""}`);
+  const currency = typeof obj.currency === "string" ? obj.currency.trim() : "";
+  const notes = typeof obj.notes === "string" ? obj.notes.trim() : "";
+
+  return {
+    id,
+    name,
+    cadence,
+    stage,
+    ...(Number.isFinite(amount) && amount >= 0 ? { amount } : {}),
+    ...(currency ? { currency } : {}),
+    ...(notes ? { notes } : {}),
+    ...(obj.createdAt ? { createdAt: obj.createdAt } : {}),
+    ...(obj.updatedAt ? { updatedAt: obj.updatedAt } : {}),
+  };
+};
+
 type AudienceDraft = {
   platform: SocialPlatform;
   countInput: string;
@@ -125,6 +173,14 @@ type AudienceDraft = {
   label: string;
   handle: string;
   url: string;
+};
+
+type PurchaseDraft = {
+  cadence: PurchaseCadence;
+  name: string;
+  amountInput: string;
+  currency: string;
+  notes: string;
 };
 
 const parseCountInput = (raw: string): number | null => {
@@ -252,6 +308,18 @@ export default function ContactDetailPage() {
   const [audienceEditingPlatform, setAudienceEditingPlatform] = useState<SocialPlatform | null>(null);
   const [audienceIsSaving, setAudienceIsSaving] = useState<boolean>(false);
   const [audienceError, setAudienceError] = useState<string | null>(null);
+  const [showPurchaseModal, setShowPurchaseModal] = useState<boolean>(false);
+  const [purchaseStage, setPurchaseStage] = useState<PurchaseStage>("possible");
+  const [purchaseDraft, setPurchaseDraft] = useState<PurchaseDraft>({
+    cadence: "monthly",
+    name: "",
+    amountInput: "",
+    currency: "",
+    notes: "",
+  });
+  const [purchaseEditingId, setPurchaseEditingId] = useState<string | null>(null);
+  const [purchaseIsSaving, setPurchaseIsSaving] = useState<boolean>(false);
+  const [purchaseError, setPurchaseError] = useState<string | null>(null);
 
   useEffect(() => {
     return () => {
@@ -269,6 +337,16 @@ export default function ContactDetailPage() {
     return Array.isArray(list) ? (list as SocialFollower[]) : [];
   };
 
+  const getPurchases = (): ContactPurchase[] => {
+    const list = (contact as any)?.purchases;
+    if (!Array.isArray(list)) return [];
+    return list.map(normalizeContactPurchase).filter((p): p is ContactPurchase => Boolean(p));
+  };
+
+  const defaultPurchaseStageForLeadStatus = (status: ContactFormState["leadStatus"]): PurchaseStage => {
+    return status === "customer" ? "converted" : "possible";
+  };
+
   const resetAudienceDraft = (platform: SocialPlatform = "x") => {
     setAudienceDraft({
       platform,
@@ -280,11 +358,29 @@ export default function ContactDetailPage() {
     });
   };
 
+  const resetPurchaseDraft = (cadence: PurchaseCadence = "monthly") => {
+    setPurchaseDraft({
+      cadence,
+      name: "",
+      amountInput: "",
+      currency: "",
+      notes: "",
+    });
+  };
+
   const handleOpenAddAudience = () => {
     setAudienceError(null);
     setAudienceEditingPlatform(null);
     resetAudienceDraft("x");
     setShowAudienceModal(true);
+  };
+
+  const handleOpenAddPurchase = (stageOverride?: PurchaseStage) => {
+    setPurchaseError(null);
+    setPurchaseEditingId(null);
+    setPurchaseStage(stageOverride ?? defaultPurchaseStageForLeadStatus(form?.leadStatus ?? "not_sure"));
+    resetPurchaseDraft("monthly");
+    setShowPurchaseModal(true);
   };
 
   const handleOpenEditAudience = (f: SocialFollower) => {
@@ -299,6 +395,20 @@ export default function ContactDetailPage() {
       url: typeof f.url === "string" ? f.url : "",
     });
     setShowAudienceModal(true);
+  };
+
+  const handleOpenEditPurchase = (p: ContactPurchase) => {
+    setPurchaseError(null);
+    setPurchaseEditingId(p.id);
+    setPurchaseStage(p.stage);
+    setPurchaseDraft({
+      cadence: p.cadence,
+      name: p.name ?? "",
+      amountInput: typeof p.amount === "number" && Number.isFinite(p.amount) ? `${p.amount}` : "",
+      currency: typeof p.currency === "string" ? p.currency : "",
+      notes: typeof p.notes === "string" ? p.notes : "",
+    });
+    setShowPurchaseModal(true);
   };
 
   const handleDeleteAudience = async (platform: SocialPlatform) => {
@@ -368,6 +478,103 @@ export default function ContactDetailPage() {
       setAudienceError(message);
     } finally {
       setAudienceIsSaving(false);
+    }
+  };
+
+  const handleDeletePurchase = async (purchaseId: string) => {
+    if (!contact || !ownerId) return;
+    const canEdit = contact.ownerId === ownerId || contact.memberIds?.includes(ownerId);
+    if (!canEdit) return;
+
+    setPurchaseError(null);
+    setPurchaseIsSaving(true);
+    try {
+      const next = getPurchases().filter((p) => p.id !== purchaseId);
+      await updateDoc(contactDocRef, {
+        purchases: next,
+        updatedAt: nowServerTimestamp(),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to remove purchase/sale";
+      setPurchaseError(message);
+    } finally {
+      setPurchaseIsSaving(false);
+    }
+  };
+
+  const handleSavePurchase = async () => {
+    if (!contact || !ownerId) return;
+    const canEdit = contact.ownerId === ownerId || contact.memberIds?.includes(ownerId);
+    if (!canEdit) return;
+
+    setPurchaseError(null);
+
+    const name = purchaseDraft.name.trim();
+    if (!name) {
+      setPurchaseError("Please enter a purchase/sale name (e.g. 'Coaching plan' or 'Pro subscription').");
+      return;
+    }
+
+    const amountRaw = purchaseDraft.amountInput.trim().replace(/,/g, "");
+    let amount: number | undefined = undefined;
+    if (amountRaw.length) {
+      const parsed = Number(amountRaw);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        setPurchaseError("Amount must be a valid non-negative number (or leave it blank).");
+        return;
+      }
+      amount = parsed;
+    }
+
+    const currency = purchaseDraft.currency.trim().toUpperCase();
+    const notes = purchaseDraft.notes.trim();
+
+    setPurchaseIsSaving(true);
+    try {
+      const existing = getPurchases();
+      const now = nowServerTimestamp();
+      const base: Omit<ContactPurchase, "id"> = {
+        stage: purchaseStage,
+        cadence: purchaseDraft.cadence,
+        name,
+        ...(typeof amount === "number" ? { amount } : {}),
+        ...(currency ? { currency } : {}),
+        ...(notes ? { notes } : {}),
+      };
+
+      const next = purchaseEditingId
+        ? existing.map((p) =>
+            p.id === purchaseEditingId
+              ? ({
+                  ...p,
+                  ...base,
+                  updatedAt: now,
+                } satisfies ContactPurchase)
+              : p,
+          )
+        : [
+            ...existing,
+            ({
+              id: crypto.randomUUID(),
+              ...base,
+              createdAt: now,
+              updatedAt: now,
+            } satisfies ContactPurchase),
+          ];
+
+      await updateDoc(contactDocRef, {
+        purchases: next,
+        updatedAt: nowServerTimestamp(),
+      });
+
+      setShowPurchaseModal(false);
+      setPurchaseEditingId(null);
+      resetPurchaseDraft(purchaseDraft.cadence);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to save purchase/sale";
+      setPurchaseError(message);
+    } finally {
+      setPurchaseIsSaving(false);
     }
   };
 
@@ -1208,7 +1415,7 @@ export default function ContactDetailPage() {
                   <option value="cold">Cold</option>
                   <option value="warm">Warm</option>
                   <option value="hot">Hot</option>
-                  <option value="customer">Customer</option>
+                  <option value="customer">Converted</option>
                 </select>
               </div>
             </div>
@@ -1473,6 +1680,116 @@ export default function ContactDetailPage() {
               </div>
             </div>
 
+            {/* Purchases / Sales (conditional by status) */}
+            {(() => {
+              const status = form?.leadStatus ?? "not_sure";
+              const canShowPossible = status === "warm" || status === "hot";
+              const canShowConverted = status === "customer";
+              const purchases = getPurchases();
+              const possible = purchases.filter((p) => p.stage === "possible");
+              const converted = purchases.filter((p) => p.stage === "converted");
+
+              if (!canShowPossible && !canShowConverted && possible.length === 0 && converted.length === 0) return null;
+
+              const section = canShowConverted ? "converted" : "possible";
+              const title = canShowConverted ? "Converted sales" : "Possible purchases";
+              const list = canShowConverted ? converted : possible;
+
+              return (
+                <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-zinc-900">{title}</div>
+                      <div className="mt-0.5 text-xs text-zinc-600">
+                        {canShowConverted
+                          ? "Track what they purchased after conversion. Add as many line items as you need."
+                          : "Track what they might buy. Add as many line items as you need."}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleOpenAddPurchase(section);
+                      }}
+                      className="rounded-xl bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
+                      disabled={purchaseIsSaving}
+                      aria-label={canShowConverted ? "Add converted sale" : "Add possible purchase"}
+                    >
+                      Add
+                    </button>
+                  </div>
+
+                  {purchaseError ? (
+                    <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                      {purchaseError}
+                    </div>
+                  ) : null}
+
+                  {list.length ? (
+                    <div className="mt-4 space-y-2">
+                      {list.map((p) => (
+                        <div
+                          key={p.id}
+                          className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2"
+                          aria-label={`${stageLabel(p.stage)}: ${p.name}`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-medium text-zinc-900">{p.name}</div>
+                              <div className="mt-0.5 text-xs text-zinc-600">
+                                {cadenceLabel(p.cadence)}
+                                {typeof p.amount === "number" ? (
+                                  <>
+                                    {" "}
+                                    ·{" "}
+                                    <span className="font-medium text-zinc-800">
+                                      {p.currency?.trim() ? `${p.currency.trim().toUpperCase()} ` : ""}
+                                      {p.amount}
+                                    </span>
+                                  </>
+                                ) : null}
+                              </div>
+                              {p.notes ? <div className="mt-1 text-xs text-zinc-700">{p.notes}</div> : null}
+                            </div>
+                            <div className="flex shrink-0 items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => handleOpenEditPurchase(p)}
+                                className="rounded-lg border border-zinc-200 bg-white px-2 py-1 text-xs font-medium text-zinc-900 hover:bg-zinc-100"
+                                aria-label={`Edit ${p.name}`}
+                              >
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeletePurchase(p.id)}
+                                disabled={purchaseIsSaving}
+                                className="rounded-lg border border-red-200 bg-white px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+                                aria-label={`Remove ${p.name}`}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="mt-4 text-xs text-zinc-600">
+                      No {canShowConverted ? "sales" : "purchases"} yet. Click “Add” to create your first one.
+                    </div>
+                  )}
+
+                  {!canShowPossible && !canShowConverted ? (
+                    <div className="mt-3 text-xs text-zinc-600">
+                      Tip: set Status to <span className="font-medium">Warm</span>, <span className="font-medium">Hot</span>, or{" "}
+                      <span className="font-medium">Converted</span> to add items quickly.
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })()}
+
             {/* Summary section + extra links */}
             <div className="rounded-2xl border border-zinc-200 bg-white p-4">
               <div className="flex items-center justify-between gap-3">
@@ -1600,6 +1917,127 @@ export default function ContactDetailPage() {
                 </div>
               ) : null}
             </div>
+
+            {showPurchaseModal ? (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+                  <div className="flex items-center justify-between gap-3">
+                    <h2 className="text-lg font-semibold text-zinc-900">
+                      {purchaseEditingId ? "Edit item" : "Add item"}
+                    </h2>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowPurchaseModal(false);
+                        setPurchaseEditingId(null);
+                        setPurchaseError(null);
+                      }}
+                      className="rounded-lg border border-zinc-200 bg-white px-2 py-1 text-xs font-medium text-zinc-900 hover:bg-zinc-100"
+                      aria-label="Close purchases modal"
+                    >
+                      Close
+                    </button>
+                  </div>
+
+                  <div className="mt-1 text-xs text-zinc-600">{stageLabel(purchaseStage)}</div>
+
+                  <div className="mt-4 grid gap-3">
+                    <label className="block">
+                      <div className="text-xs font-medium text-zinc-700">Type</div>
+                      <select
+                        value={purchaseDraft.cadence}
+                        onChange={(e) =>
+                          setPurchaseDraft((prev) => ({ ...prev, cadence: e.target.value as PurchaseCadence }))
+                        }
+                        className="mt-1 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-400"
+                        aria-label="Purchase type"
+                      >
+                        <option value="monthly">Monthly subscription</option>
+                        <option value="yearly">Yearly subscription</option>
+                        <option value="one_off">One-off</option>
+                      </select>
+                    </label>
+
+                    <label className="block">
+                      <div className="text-xs font-medium text-zinc-700">Name</div>
+                      <input
+                        value={purchaseDraft.name}
+                        onChange={(e) => setPurchaseDraft((prev) => ({ ...prev, name: e.target.value }))}
+                        className="mt-1 w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
+                        placeholder="e.g. Pro plan, Coaching, Implementation"
+                        aria-label="Purchase name"
+                      />
+                    </label>
+
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="block">
+                        <div className="text-xs font-medium text-zinc-700">Amount (optional)</div>
+                        <input
+                          value={purchaseDraft.amountInput}
+                          onChange={(e) => setPurchaseDraft((prev) => ({ ...prev, amountInput: e.target.value }))}
+                          className="mt-1 w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
+                          placeholder="e.g. 99"
+                          inputMode="decimal"
+                          aria-label="Amount"
+                        />
+                      </label>
+                      <label className="block">
+                        <div className="text-xs font-medium text-zinc-700">Currency (optional)</div>
+                        <input
+                          value={purchaseDraft.currency}
+                          onChange={(e) => setPurchaseDraft((prev) => ({ ...prev, currency: e.target.value }))}
+                          className="mt-1 w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm uppercase outline-none focus:border-zinc-400"
+                          placeholder="e.g. USD"
+                          aria-label="Currency"
+                        />
+                      </label>
+                    </div>
+
+                    <label className="block">
+                      <div className="text-xs font-medium text-zinc-700">Notes (optional)</div>
+                      <textarea
+                        value={purchaseDraft.notes}
+                        onChange={(e) => setPurchaseDraft((prev) => ({ ...prev, notes: e.target.value }))}
+                        className="mt-1 min-h-24 w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
+                        placeholder="Anything useful (timing, package details, objections)…"
+                        aria-label="Purchase notes"
+                      />
+                    </label>
+                  </div>
+
+                  {purchaseError ? (
+                    <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                      {purchaseError}
+                    </div>
+                  ) : null}
+
+                  <div className="mt-5 flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowPurchaseModal(false);
+                        setPurchaseEditingId(null);
+                        setPurchaseError(null);
+                      }}
+                      className="rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-zinc-100"
+                      aria-label="Cancel purchase changes"
+                      disabled={purchaseIsSaving}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSavePurchase}
+                      className="rounded-xl bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
+                      aria-label="Save purchase"
+                      disabled={purchaseIsSaving}
+                    >
+                      {purchaseIsSaving ? "Saving…" : "Save"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
 
             {showAudienceModal ? (
               <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">

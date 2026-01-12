@@ -63,6 +63,21 @@ export type SocialFollower = {
   metric?: SocialFollowerMetric | null;
 };
 
+export type PurchaseCadence = "monthly" | "yearly" | "one_off";
+export type PurchaseStage = "possible" | "converted";
+
+export type ContactPurchase = {
+  id: string;
+  stage: PurchaseStage;
+  cadence: PurchaseCadence;
+  name: string;
+  amount?: number | null;
+  currency?: string | null;
+  notes?: string | null;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+};
+
 export type ContactDoc = {
   ownerId: string;
   crmId?: string;
@@ -87,6 +102,7 @@ export type ContactDoc = {
   notes?: string;
   tags: string[];
   socialFollowers?: SocialFollower[];
+  purchases?: ContactPurchase[];
 
   ai?: ContactAiMetadata;
   deepResearchStatus?: "disabled" | "queued" | "running" | "done" | "error";

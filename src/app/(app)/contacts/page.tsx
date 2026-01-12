@@ -44,7 +44,7 @@ const leadStatusLabel = (v: LeadStatus | undefined): string => {
     case "hot":
       return "Hot";
     case "customer":
-      return "Customer";
+      return "Converted";
     default:
       return "Not sure";
   }
@@ -653,7 +653,7 @@ export default function ContactsPage() {
                       <option value="cold">Cold</option>
                       <option value="warm">Warm</option>
                       <option value="hot">Hot</option>
-                      <option value="customer">Customer</option>
+                      <option value="customer">Converted</option>
                     </select>
                     {data.isDraft ? (
                       <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700">
