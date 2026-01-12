@@ -1485,7 +1485,7 @@ export default function ContactDetailPage() {
                 title="Upload profile photo"
               >
                 {avatarUrl ? (
-                  <Image src={avatarUrl} alt="Contact profile photo" fill className="object-cover" />
+                  <Image src={avatarUrl} alt="Contact profile photo" fill sizes="48px" className="object-cover" />
                 ) : (
                   <span className="flex h-full w-full items-center justify-center">
                     {(

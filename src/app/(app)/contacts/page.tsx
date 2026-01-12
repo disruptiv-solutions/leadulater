@@ -675,7 +675,7 @@ export default function ContactsPage() {
                     <span className="inline-flex items-center gap-2">
                       <span className="relative h-8 w-8 overflow-hidden rounded-full border border-zinc-200 bg-zinc-100 text-xs font-semibold text-zinc-700">
                         {avatarUrl ? (
-                          <Image src={avatarUrl} alt="" fill className="object-cover" />
+                          <Image src={avatarUrl} alt="" fill sizes="32px" className="object-cover" />
                         ) : (
                           <span className="flex h-full w-full items-center justify-center">
                             {avatarLetter(data)}

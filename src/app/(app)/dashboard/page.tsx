@@ -41,6 +41,8 @@ type CaptureWithContact = {
   id: string;
   data: CaptureDoc;
   contactName: string | null;
+  linkUrl: string;
+  linkLabel: string;
 };
 
 const MAX_CONTACTS_FOR_REVENUE = 500;
@@ -246,7 +248,9 @@ export default function DashboardPage() {
         data: d.data() as CaptureDoc,
       }));
 
-      // Fetch contact names for captures that have resultContactId
+      // Fetch contact names for captures that have resultContactId.
+      // If the contact isn't readable (missing memberIds, wrong crmId in scope, etc),
+      // don't log an error and don't deep-link to a contact the user can't open.
       const capturesWithContacts = await Promise.all(
         captures.map(async (capture) => {
           if (capture.data.resultContactId) {
@@ -264,13 +268,28 @@ export default function DashboardPage() {
               const contactDocSnap = snap.docs[0];
               if (contactDocSnap) {
                 const contactData = contactDocSnap.data() as ContactDoc;
-                return { ...capture, contactName: getContactDisplayName(contactData) };
+                return {
+                  ...capture,
+                  contactName: getContactDisplayName(contactData),
+                  linkUrl: `/contacts/${capture.data.resultContactId}`,
+                  linkLabel: "View Contact",
+                };
               }
             } catch (err) {
-              console.error("Error fetching contact:", err);
+              const anyErr = err as unknown as { code?: string };
+              // Permission-denied here is common when legacy contacts are missing memberIds.
+              // It's not actionable on the dashboard, so just fall back silently.
+              if (anyErr?.code !== "permission-denied") {
+                console.error("Error fetching contact:", err);
+              }
             }
           }
-          return { ...capture, contactName: null };
+          return {
+            ...capture,
+            contactName: null,
+            linkUrl: `/companion/captures/${capture.id}`,
+            linkLabel: "View",
+          };
         }),
       );
 
@@ -421,11 +440,8 @@ export default function DashboardPage() {
         </div>
         <div className="divide-y divide-zinc-200">
           {recentCaptures.length ? (
-            recentCaptures.map(({ id, data, contactName }) => {
+            recentCaptures.map(({ id, data, contactName, linkUrl, linkLabel }) => {
               const displayTitle = contactName || data.text?.trim() || "Untitled capture";
-              const linkUrl = data.resultContactId 
-                ? `/contacts/${data.resultContactId}` 
-                : `/companion/captures/${id}`;
               const isDeleting = deletingCaptureId === id;
               
               return (
@@ -467,7 +483,7 @@ export default function DashboardPage() {
                       className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs text-zinc-900 hover:bg-zinc-100"
                       aria-label={`Open ${contactName ? "contact" : "capture"} ${id}`}
                     >
-                      {contactName ? "View Contact" : "View"}
+                      {linkLabel}
                     </Link>
                   </div>
                 </div>
