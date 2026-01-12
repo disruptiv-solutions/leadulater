@@ -74,8 +74,9 @@ export type ContactPurchase = {
   amount?: number | null;
   currency?: string | null;
   notes?: string | null;
-  createdAt?: unknown;
-  updatedAt?: unknown;
+  // Stored as client timestamps because Firestore serverTimestamp() isn't supported inside array elements.
+  createdAtMs?: number | null;
+  updatedAtMs?: number | null;
 };
 
 export type ContactDoc = {

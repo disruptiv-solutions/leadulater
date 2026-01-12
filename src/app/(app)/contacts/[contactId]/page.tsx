@@ -161,8 +161,8 @@ const normalizeContactPurchase = (raw: unknown): ContactPurchase | null => {
     ...(Number.isFinite(amount) && amount >= 0 ? { amount } : {}),
     ...(currency ? { currency } : {}),
     ...(notes ? { notes } : {}),
-    ...(obj.createdAt ? { createdAt: obj.createdAt } : {}),
-    ...(obj.updatedAt ? { updatedAt: obj.updatedAt } : {}),
+    ...(typeof obj.createdAtMs === "number" && Number.isFinite(obj.createdAtMs) ? { createdAtMs: obj.createdAtMs } : {}),
+    ...(typeof obj.updatedAtMs === "number" && Number.isFinite(obj.updatedAtMs) ? { updatedAtMs: obj.updatedAtMs } : {}),
   };
 };
 
@@ -532,7 +532,7 @@ export default function ContactDetailPage() {
     setPurchaseIsSaving(true);
     try {
       const existing = getPurchases();
-      const now = nowServerTimestamp();
+      const nowMs = Date.now();
       const base: Omit<ContactPurchase, "id"> = {
         stage: purchaseStage,
         cadence: purchaseDraft.cadence,
@@ -548,7 +548,7 @@ export default function ContactDetailPage() {
               ? ({
                   ...p,
                   ...base,
-                  updatedAt: now,
+                  updatedAtMs: nowMs,
                 } satisfies ContactPurchase)
               : p,
           )
@@ -557,8 +557,8 @@ export default function ContactDetailPage() {
             ({
               id: crypto.randomUUID(),
               ...base,
-              createdAt: now,
-              updatedAt: now,
+              createdAtMs: nowMs,
+              updatedAtMs: nowMs,
             } satisfies ContactPurchase),
           ];
 
