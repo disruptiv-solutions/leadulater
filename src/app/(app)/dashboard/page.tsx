@@ -22,17 +22,102 @@ import { db } from "@/lib/firebase/firestore";
 import { storage } from "@/lib/firebase/storage";
 import { useAuth } from "@/lib/hooks/useAuth";
 import { useCrm } from "@/lib/hooks/useCrm";
-import type { CaptureDoc, ContactDoc } from "@/lib/types";
+import type { CaptureDoc, ContactDoc, ContactPurchase } from "@/lib/types";
 
 type DashboardStats = {
   contactsCount: number | null;
   recentCapturesCount: number | null;
 };
 
+type RevenueLine = { currency: string; total: number };
+type RevenueStats = {
+  scannedContacts: number;
+  isTruncated: boolean;
+  actual: { lines: RevenueLine[]; pricedItems: number; contactsWithItems: number };
+  potential: { lines: RevenueLine[]; pricedItems: number; contactsWithItems: number };
+};
+
 type CaptureWithContact = {
   id: string;
   data: CaptureDoc;
   contactName: string | null;
+};
+
+const MAX_CONTACTS_FOR_REVENUE = 500;
+
+const isIsoCurrency = (value: string): boolean => /^[A-Z]{3}$/.test(value);
+
+const formatMoney = (amount: number, currency: string): string => {
+  const safeCurrency = currency.trim().toUpperCase();
+  try {
+    if (isIsoCurrency(safeCurrency)) {
+      return new Intl.NumberFormat(undefined, { style: "currency", currency: safeCurrency }).format(amount);
+    }
+    return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 2 }).format(amount);
+  } catch {
+    return `${amount}`;
+  }
+};
+
+const normalizePurchase = (raw: unknown): ContactPurchase | null => {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as any;
+  if (typeof obj.id !== "string" || typeof obj.name !== "string") return null;
+  if (typeof obj.stage !== "string" || typeof obj.cadence !== "string") return null;
+  return obj as ContactPurchase;
+};
+
+const computeRevenue = (contacts: ContactDoc[]): RevenueStats => {
+  const actualTotals = new Map<string, number>();
+  const potentialTotals = new Map<string, number>();
+  let actualItems = 0;
+  let potentialItems = 0;
+  let contactsWithActual = 0;
+  let contactsWithPotential = 0;
+
+  for (const c of contacts) {
+    const listRaw = (c as any)?.purchases;
+    const list = Array.isArray(listRaw)
+      ? listRaw.map(normalizePurchase).filter((p): p is ContactPurchase => Boolean(p))
+      : [];
+    if (!list.length) continue;
+
+    let hasActual = false;
+    let hasPotential = false;
+
+    for (const p of list) {
+      const amount = (p as any)?.amount;
+      if (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0) continue;
+
+      const currencyRaw = typeof (p as any)?.currency === "string" ? (p as any).currency : "";
+      const currency = currencyRaw.trim().toUpperCase() || "—";
+
+      if (p.stage === "converted") {
+        actualTotals.set(currency, (actualTotals.get(currency) ?? 0) + amount);
+        actualItems += 1;
+        hasActual = true;
+      } else if (p.stage === "possible") {
+        potentialTotals.set(currency, (potentialTotals.get(currency) ?? 0) + amount);
+        potentialItems += 1;
+        hasPotential = true;
+      }
+    }
+
+    if (hasActual) contactsWithActual += 1;
+    if (hasPotential) contactsWithPotential += 1;
+  }
+
+  const toLines = (m: Map<string, number>): RevenueLine[] =>
+    Array.from(m.entries())
+      .map(([currency, total]) => ({ currency, total }))
+      .sort((a, b) => b.total - a.total);
+
+  return {
+    scannedContacts: contacts.length,
+    isTruncated: contacts.length >= MAX_CONTACTS_FOR_REVENUE,
+    actual: { lines: toLines(actualTotals), pricedItems: actualItems, contactsWithItems: contactsWithActual },
+    potential: { lines: toLines(potentialTotals), pricedItems: potentialItems, contactsWithItems: contactsWithPotential },
+  };
 };
 
 const getContactDisplayName = (contact: ContactDoc): string => {
@@ -55,6 +140,9 @@ export default function DashboardPage() {
 
   const [recentCaptures, setRecentCaptures] = useState<CaptureWithContact[]>([]);
   const [deletingCaptureId, setDeletingCaptureId] = useState<string | null>(null);
+  const [revenue, setRevenue] = useState<RevenueStats | null>(null);
+  const [revenueIsLoading, setRevenueIsLoading] = useState<boolean>(false);
+  const [revenueError, setRevenueError] = useState<string | null>(null);
 
   const capturesQuery = useMemo(() => {
     if (!ownerId) return null;
@@ -111,6 +199,42 @@ export default function DashboardPage() {
     };
 
     void handleLoadCounts();
+  }, [activeCrmId, activeScope, ownerId]);
+
+  useEffect(() => {
+    if (!ownerId) return;
+
+    const handleLoadRevenue = async () => {
+      setRevenueIsLoading(true);
+      setRevenueError(null);
+      try {
+        const filters =
+          activeScope === "crm" && activeCrmId
+            ? [where("memberIds", "array-contains", ownerId), where("crmId", "==", activeCrmId)]
+            : [where("memberIds", "array-contains", ownerId)];
+
+        // Try to fetch a stable, recent-ish slice first; fall back to no order if index isn't ready.
+        const orderedQ = query(collection(db, "contacts"), ...filters, orderBy("updatedAt", "desc"), limit(MAX_CONTACTS_FOR_REVENUE));
+        let snap;
+        try {
+          snap = await getDocs(orderedQ);
+        } catch (err) {
+          const fallbackQ = query(collection(db, "contacts"), ...filters, limit(MAX_CONTACTS_FOR_REVENUE));
+          snap = await getDocs(fallbackQ);
+        }
+
+        const contacts = snap.docs.map((d) => d.data() as ContactDoc);
+        setRevenue(computeRevenue(contacts));
+      } catch (err) {
+        const anyErr = err as unknown as { message?: string };
+        setRevenue(null);
+        setRevenueError(anyErr?.message ?? "Failed to load revenue");
+      } finally {
+        setRevenueIsLoading(false);
+      }
+    };
+
+    void handleLoadRevenue();
   }, [activeCrmId, activeScope, ownerId]);
 
   useEffect(() => {
@@ -223,7 +347,7 @@ export default function DashboardPage() {
         </Link>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <div className="rounded-2xl border border-zinc-200 bg-white p-4">
           <div className="text-sm text-zinc-600">Contacts</div>
           <div className="mt-2 text-3xl font-semibold tracking-tight">
@@ -235,6 +359,59 @@ export default function DashboardPage() {
           <div className="mt-2 text-3xl font-semibold tracking-tight">
             {stats.recentCapturesCount ?? "—"}
           </div>
+        </div>
+
+        <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+          <div className="text-sm text-zinc-600">Actual revenue (Converted)</div>
+          <div className="mt-2 text-2xl font-semibold tracking-tight">
+            {revenueIsLoading ? "…" : revenue?.actual.lines.length === 1 ? formatMoney(revenue.actual.lines[0]!.total, revenue.actual.lines[0]!.currency) : revenue?.actual.lines.length ? "Multiple" : "—"}
+          </div>
+          <div className="mt-2 text-xs text-zinc-600">
+            {revenueError
+              ? revenueError
+              : revenue?.actual.lines.length
+                ? `${revenue.actual.pricedItems} priced items across ${revenue.actual.contactsWithItems} contacts`
+                : "Add amounts to converted sales to see totals"}
+          </div>
+          {revenue?.actual.lines.length && revenue.actual.lines.length > 1 ? (
+            <div className="mt-2 space-y-1 text-xs text-zinc-700">
+              {revenue.actual.lines.slice(0, 3).map((l) => (
+                <div key={`a:${l.currency}`} className="flex items-center justify-between gap-2">
+                  <div className="truncate">{l.currency}</div>
+                  <div className="shrink-0 font-medium">{formatMoney(l.total, l.currency)}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+          <div className="text-sm text-zinc-600">Potential revenue (Warm/Hot)</div>
+          <div className="mt-2 text-2xl font-semibold tracking-tight">
+            {revenueIsLoading ? "…" : revenue?.potential.lines.length === 1 ? formatMoney(revenue.potential.lines[0]!.total, revenue.potential.lines[0]!.currency) : revenue?.potential.lines.length ? "Multiple" : "—"}
+          </div>
+          <div className="mt-2 text-xs text-zinc-600">
+            {revenueError
+              ? revenueError
+              : revenue?.potential.lines.length
+                ? `${revenue.potential.pricedItems} priced items across ${revenue.potential.contactsWithItems} contacts`
+                : "Add amounts to possible purchases to see totals"}
+          </div>
+          {revenue?.potential.lines.length && revenue.potential.lines.length > 1 ? (
+            <div className="mt-2 space-y-1 text-xs text-zinc-700">
+              {revenue.potential.lines.slice(0, 3).map((l) => (
+                <div key={`p:${l.currency}`} className="flex items-center justify-between gap-2">
+                  <div className="truncate">{l.currency}</div>
+                  <div className="shrink-0 font-medium">{formatMoney(l.total, l.currency)}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {revenue?.isTruncated ? (
+            <div className="mt-2 text-[11px] text-zinc-500">
+              Scanned first {MAX_CONTACTS_FOR_REVENUE} contacts for revenue.
+            </div>
+          ) : null}
         </div>
       </div>
 
