@@ -181,6 +181,7 @@ export default function ContactsPage() {
   const [filter, setFilter] = useState<FilterType>("all");
   const [searchText, setSearchText] = useState<string>("");
   const [deletingContactId, setDeletingContactId] = useState<string | null>(null);
+  const [copiedContactId, setCopiedContactId] = useState<string | null>(null);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -375,6 +376,100 @@ export default function ContactsPage() {
       }
       return { ...prev, [id]: true };
     });
+  };
+
+  const toDateLabel = (ms: unknown): string => {
+    if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return "";
+    try {
+      const d = new Date(ms);
+      const yyyy = d.getFullYear();
+      const mm = `${d.getMonth() + 1}`.padStart(2, "0");
+      const dd = `${d.getDate()}`.padStart(2, "0");
+      return `${yyyy}-${mm}-${dd}`;
+    } catch {
+      return "";
+    }
+  };
+
+  const contactToClipboardText = (contactId: string, c: ContactDoc): string => {
+    const lines: string[] = [];
+    const name = displayName(c);
+    const status = leadStatusLabel(coerceLeadStatus((c as unknown as { leadStatus?: unknown }).leadStatus));
+    lines.push(`${name} (${status})`);
+    lines.push(`Contact ID: ${contactId}`);
+
+    const companyBits = [c.companyName?.trim(), c.jobTitle?.trim()].filter(Boolean);
+    if (companyBits.length) lines.push(`Company: ${companyBits.join(" · ")}`);
+
+    const contactBits: Array<[string, string | undefined]> = [
+      ["Email", c.email?.trim() || undefined],
+      ["Phone", c.phone?.trim() || undefined],
+      ["Website", c.website?.trim() || undefined],
+      ["LinkedIn", c.linkedInUrl?.trim() || undefined],
+      ["Location", c.location?.trim() || undefined],
+    ];
+    for (const [label, value] of contactBits) {
+      if (value) lines.push(`${label}: ${value}`);
+    }
+
+    if (Array.isArray(c.tags) && c.tags.length) {
+      lines.push(`Tags: ${c.tags.join(", ")}`);
+    }
+
+    const notes = (c.deepResearchSummary ?? c.notes ?? "").trim();
+    if (notes) {
+      lines.push("");
+      lines.push("Summary / Notes:");
+      lines.push(notes);
+    }
+
+    const purchases = (c as any)?.purchases;
+    if (Array.isArray(purchases) && purchases.length) {
+      lines.push("");
+      lines.push("Purchases / Sales:");
+      for (const raw of purchases) {
+        if (!raw || typeof raw !== "object") continue;
+        const p = raw as any;
+        const stage = `${p.stage ?? ""}`.trim() || "unknown";
+        const cadence = `${p.cadence ?? ""}`.trim() || "unknown";
+        const amount = typeof p.amount === "number" && Number.isFinite(p.amount) ? p.amount : null;
+        const currency = typeof p.currency === "string" ? p.currency.trim().toUpperCase() : "";
+        const start = toDateLabel(p.startDateMs);
+        const end = toDateLabel(p.endDateMs);
+        const span = start || end ? ` (${[start ? `start ${start}` : "", end ? `end ${end}` : ""].filter(Boolean).join(", ")})` : "";
+        const amt = amount !== null ? ` · ${currency ? `${currency} ` : ""}${amount}` : "";
+        const title = `${p.name ?? ""}`.trim() || "Untitled";
+        lines.push(`- ${title} · ${stage} · ${cadence}${amt}${span}`);
+        const pNotes = typeof p.notes === "string" ? p.notes.trim() : "";
+        if (pNotes) lines.push(`  Notes: ${pNotes}`);
+      }
+    }
+
+    if (Array.isArray(c.extraLinks) && c.extraLinks.length) {
+      lines.push("");
+      lines.push("Additional links:");
+      for (const l of c.extraLinks) {
+        if (!l?.url) continue;
+        lines.push(`- ${l.label ?? "Link"}: ${l.url}`);
+      }
+    }
+
+    lines.push("");
+    lines.push("Raw JSON:");
+    lines.push(JSON.stringify({ id: contactId, ...c }, null, 2));
+    return lines.join("\n");
+  };
+
+  const handleCopyContact = async (contactId: string, c: ContactDoc) => {
+    try {
+      const text = contactToClipboardText(contactId, c);
+      await navigator.clipboard.writeText(text);
+      setCopiedContactId(contactId);
+      window.setTimeout(() => setCopiedContactId((prev) => (prev === contactId ? null : prev)), 1500);
+    } catch (err) {
+      console.error("Copy failed:", err);
+      alert("Failed to copy. Your browser may be blocking clipboard access.");
+    }
   };
 
   const handleDeleteContact = async (contactId: string, contactData: ContactDoc) => {
@@ -804,6 +899,19 @@ export default function ContactsPage() {
                     )}
                   </div>
                   <div className="col-span-2 flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        void handleCopyContact(id, data);
+                      }}
+                      className="rounded-lg border border-zinc-200 bg-white px-2 py-1 text-xs font-medium text-zinc-900 hover:bg-zinc-100"
+                      aria-label={`Copy all content for ${displayName(data)}`}
+                      title="Copy"
+                    >
+                      {copiedContactId === id ? "Copied" : "Copy"}
+                    </button>
                     <select
                       value={status}
                       onChange={(e) => {
