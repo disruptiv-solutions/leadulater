@@ -82,6 +82,54 @@ const leadStatusSelectClass = (v: LeadStatus): string => {
 
 type RevenueBadge = { kind: "converted" | "potential"; label: string };
 
+const addMonths = (ms: number, months: number): number => {
+  const d = new Date(ms);
+  const day = d.getDate();
+  d.setMonth(d.getMonth() + months);
+  while (d.getDate() < day) d.setDate(d.getDate() - 1);
+  return d.getTime();
+};
+
+const addYears = (ms: number, years: number): number => {
+  const d = new Date(ms);
+  const day = d.getDate();
+  d.setFullYear(d.getFullYear() + years);
+  while (d.getDate() < day) d.setDate(d.getDate() - 1);
+  return d.getTime();
+};
+
+const countBillingEvents = (cadence: "monthly" | "yearly", startMs: number, endMs: number): number => {
+  const safeEnd = Math.max(endMs, startMs);
+  let cursor = startMs;
+  let events = 1;
+  const step = cadence === "monthly" ? (ms: number) => addMonths(ms, 1) : (ms: number) => addYears(ms, 1);
+  for (let i = 0; i < 5000; i++) {
+    const next = step(cursor);
+    if (next <= safeEnd) {
+      events += 1;
+      cursor = next;
+      continue;
+    }
+    break;
+  }
+  return events;
+};
+
+const computeAccruedAmount = (p: any, nowMs: number): number | null => {
+  const amount = p?.amount;
+  if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) return null;
+  const cadence = `${p?.cadence ?? ""}`.trim();
+  if (cadence === "one_off") return amount;
+
+  const startMs = typeof p?.startDateMs === "number" ? p.startDateMs : null;
+  const endMs = typeof p?.endDateMs === "number" ? p.endDateMs : null;
+  if (startMs === null) return amount;
+
+  const effectiveEnd = endMs ?? nowMs;
+  const events = cadence === "monthly" ? countBillingEvents("monthly", startMs, effectiveEnd) : countBillingEvents("yearly", startMs, effectiveEnd);
+  return amount * events;
+};
+
 const computeRevenueBadge = (c: ContactDoc): RevenueBadge | null => {
   const purchases = (c as any)?.purchases;
   if (!Array.isArray(purchases)) return null;
@@ -89,10 +137,11 @@ const computeRevenueBadge = (c: ContactDoc): RevenueBadge | null => {
   let converted = 0;
   let potential = 0;
 
+  const nowMs = Date.now();
   for (const raw of purchases) {
     if (!raw || typeof raw !== "object") continue;
     const p = raw as any;
-    const amount = p?.amount;
+    const amount = computeAccruedAmount(p, nowMs);
     if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) continue;
 
     const stage = `${p?.stage ?? ""}`.trim();

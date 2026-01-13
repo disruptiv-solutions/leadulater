@@ -69,6 +69,54 @@ const normalizePurchase = (raw: unknown): ContactPurchase | null => {
   return obj as ContactPurchase;
 };
 
+const addMonths = (ms: number, months: number): number => {
+  const d = new Date(ms);
+  const day = d.getDate();
+  d.setMonth(d.getMonth() + months);
+  while (d.getDate() < day) d.setDate(d.getDate() - 1);
+  return d.getTime();
+};
+
+const addYears = (ms: number, years: number): number => {
+  const d = new Date(ms);
+  const day = d.getDate();
+  d.setFullYear(d.getFullYear() + years);
+  while (d.getDate() < day) d.setDate(d.getDate() - 1);
+  return d.getTime();
+};
+
+const countBillingEvents = (cadence: "monthly" | "yearly", startMs: number, endMs: number): number => {
+  const safeEnd = Math.max(endMs, startMs);
+  let cursor = startMs;
+  let events = 1;
+  const step = cadence === "monthly" ? (ms: number) => addMonths(ms, 1) : (ms: number) => addYears(ms, 1);
+  for (let i = 0; i < 5000; i++) {
+    const next = step(cursor);
+    if (next <= safeEnd) {
+      events += 1;
+      cursor = next;
+      continue;
+    }
+    break;
+  }
+  return events;
+};
+
+const computeAccruedAmount = (p: ContactPurchase, nowMs: number): number | null => {
+  const amount = (p as any)?.amount;
+  if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) return null;
+  const cadence = `${(p as any)?.cadence ?? ""}` as ContactPurchase["cadence"];
+  if (cadence === "one_off") return amount;
+
+  const startMs = typeof (p as any)?.startDateMs === "number" ? (p as any).startDateMs : null;
+  const endMs = typeof (p as any)?.endDateMs === "number" ? (p as any).endDateMs : null;
+  if (startMs === null) return amount;
+
+  const effectiveEnd = endMs ?? nowMs;
+  const events = cadence === "monthly" ? countBillingEvents("monthly", startMs, effectiveEnd) : countBillingEvents("yearly", startMs, effectiveEnd);
+  return amount * events;
+};
+
 const computeRevenue = (contacts: ContactDoc[]): RevenueStats => {
   const actualTotals = new Map<string, number>();
   const potentialTotals = new Map<string, number>();
@@ -89,8 +137,8 @@ const computeRevenue = (contacts: ContactDoc[]): RevenueStats => {
     let hasPotential = false;
 
     for (const p of list) {
-      const amount = (p as any)?.amount;
-      if (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0) continue;
+      const amount = computeAccruedAmount(p, Date.now());
+      if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) continue;
 
       const currencyRaw = typeof (p as any)?.currency === "string" ? (p as any).currency : "";
       const currency = currencyRaw.trim().toUpperCase() || "—";

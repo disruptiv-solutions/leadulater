@@ -74,6 +74,9 @@ export type ContactPurchase = {
   amount?: number | null;
   currency?: string | null;
   notes?: string | null;
+  // Optional subscription span. If endDateMs is missing, it is treated as active through "today" in calculations.
+  startDateMs?: number | null;
+  endDateMs?: number | null;
   // Stored as client timestamps because Firestore serverTimestamp() isn't supported inside array elements.
   createdAtMs?: number | null;
   updatedAtMs?: number | null;

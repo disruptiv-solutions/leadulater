@@ -119,6 +119,79 @@ const formatCompact = (n: number): string => {
   }
 };
 
+const toDateInputValue = (ms: number | null | undefined): string => {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return "";
+  const d = new Date(ms);
+  const yyyy = d.getFullYear();
+  const mm = `${d.getMonth() + 1}`.padStart(2, "0");
+  const dd = `${d.getDate()}`.padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+};
+
+const fromDateInputValue = (value: string): number | null => {
+  const v = value.trim();
+  if (!v) return null;
+  // Treat as local date; stored as ms for portability.
+  const d = new Date(`${v}T00:00:00`);
+  const ms = d.getTime();
+  return Number.isFinite(ms) ? ms : null;
+};
+
+const addMonths = (ms: number, months: number): number => {
+  const d = new Date(ms);
+  const day = d.getDate();
+  d.setMonth(d.getMonth() + months);
+  // Handle month rollover (e.g. Jan 31 -> Feb)
+  while (d.getDate() < day) d.setDate(d.getDate() - 1);
+  return d.getTime();
+};
+
+const addYears = (ms: number, years: number): number => {
+  const d = new Date(ms);
+  const day = d.getDate();
+  d.setFullYear(d.getFullYear() + years);
+  while (d.getDate() < day) d.setDate(d.getDate() - 1);
+  return d.getTime();
+};
+
+const countBillingEvents = (cadence: PurchaseCadence, startMs: number, endMs: number): number => {
+  const safeEnd = Math.max(endMs, startMs);
+  if (cadence === "one_off") return 1;
+
+  let cursor = startMs;
+  let events = 1; // billed at start
+  const step = cadence === "monthly" ? (ms: number) => addMonths(ms, 1) : (ms: number) => addYears(ms, 1);
+
+  // Count subsequent billing events that fall on/before end.
+  // This loop is fine for small ranges; in practice subscriptions won't span thousands of periods.
+  for (let i = 0; i < 5000; i++) {
+    const next = step(cursor);
+    if (next <= safeEnd) {
+      events += 1;
+      cursor = next;
+      continue;
+    }
+    break;
+  }
+
+  return events;
+};
+
+const computeAccruedAmount = (p: ContactPurchase, nowMs: number): number | null => {
+  const amount = p.amount;
+  if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) return null;
+
+  if (p.cadence === "one_off") return amount;
+
+  const startMs = typeof p.startDateMs === "number" ? p.startDateMs : null;
+  const endMs = typeof p.endDateMs === "number" ? p.endDateMs : null;
+  if (startMs === null) return amount; // backward-compat: treat as 1 period if no start date set
+
+  const effectiveEnd = endMs ?? nowMs;
+  const events = countBillingEvents(p.cadence, startMs, effectiveEnd);
+  return amount * events;
+};
+
 const PURCHASE_CADENCES = ["monthly", "yearly", "one_off"] as const satisfies readonly PurchaseCadence[];
 const PURCHASE_STAGES = ["possible", "converted"] as const satisfies readonly PurchaseStage[];
 
@@ -153,6 +226,8 @@ const normalizeContactPurchase = (raw: unknown): ContactPurchase | null => {
   const amount = typeof obj.amount === "number" ? obj.amount : Number(`${obj.amount ?? ""}`);
   const currency = typeof obj.currency === "string" ? obj.currency.trim() : "";
   const notes = typeof obj.notes === "string" ? obj.notes.trim() : "";
+  const startDateMs = typeof obj.startDateMs === "number" && Number.isFinite(obj.startDateMs) ? obj.startDateMs : null;
+  const endDateMs = typeof obj.endDateMs === "number" && Number.isFinite(obj.endDateMs) ? obj.endDateMs : null;
 
   return {
     id,
@@ -162,6 +237,8 @@ const normalizeContactPurchase = (raw: unknown): ContactPurchase | null => {
     ...(Number.isFinite(amount) && amount >= 0 ? { amount } : {}),
     ...(currency ? { currency } : {}),
     ...(notes ? { notes } : {}),
+    ...(startDateMs !== null ? { startDateMs } : {}),
+    ...(endDateMs !== null ? { endDateMs } : {}),
     ...(typeof obj.createdAtMs === "number" && Number.isFinite(obj.createdAtMs) ? { createdAtMs: obj.createdAtMs } : {}),
     ...(typeof obj.updatedAtMs === "number" && Number.isFinite(obj.updatedAtMs) ? { updatedAtMs: obj.updatedAtMs } : {}),
   };
@@ -190,6 +267,8 @@ type PurchaseDraft = {
   amountInput: string;
   currency: string;
   notes: string;
+  startDate: string;
+  endDate: string;
 };
 
 type ProductRow = { id: string; data: ProductDoc };
@@ -327,6 +406,8 @@ export default function ContactDetailPage() {
     amountInput: "",
     currency: "",
     notes: "",
+    startDate: "",
+    endDate: "",
   });
   const [purchaseEditingId, setPurchaseEditingId] = useState<string | null>(null);
   const [purchaseIsSaving, setPurchaseIsSaving] = useState<boolean>(false);
@@ -413,6 +494,8 @@ export default function ContactDetailPage() {
       amountInput: "",
       currency: "",
       notes: "",
+      startDate: "",
+      endDate: "",
     });
   };
 
@@ -457,6 +540,8 @@ export default function ContactDetailPage() {
       amountInput: typeof p.amount === "number" && Number.isFinite(p.amount) ? `${p.amount}` : "",
       currency: typeof p.currency === "string" ? p.currency : "",
       notes: typeof p.notes === "string" ? p.notes : "",
+      startDate: toDateInputValue(p.startDateMs ?? null),
+      endDate: toDateInputValue(p.endDateMs ?? null),
     });
     setShowPurchaseModal(true);
   };
@@ -578,6 +663,12 @@ export default function ContactDetailPage() {
 
     const currency = purchaseDraft.currency.trim().toUpperCase();
     const notes = purchaseDraft.notes.trim();
+    const startDateMs = fromDateInputValue(purchaseDraft.startDate);
+    const endDateMs = fromDateInputValue(purchaseDraft.endDate);
+    if (startDateMs !== null && endDateMs !== null && endDateMs < startDateMs) {
+      setPurchaseError("End date must be on or after start date.");
+      return;
+    }
 
     setPurchaseIsSaving(true);
     try {
@@ -590,6 +681,8 @@ export default function ContactDetailPage() {
         ...(typeof amount === "number" ? { amount } : {}),
         ...(currency ? { currency } : {}),
         ...(notes ? { notes } : {}),
+        ...(startDateMs !== null ? { startDateMs } : {}),
+        ...(endDateMs !== null ? { endDateMs } : {}),
       };
 
       const next = purchaseEditingId
@@ -1869,6 +1962,29 @@ export default function ContactDetailPage() {
                                   </>
                                 ) : null}
                               </div>
+                              {(() => {
+                                if (p.cadence === "one_off") return null;
+                                const start = typeof p.startDateMs === "number" ? toDateInputValue(p.startDateMs) : "";
+                                const end =
+                                  typeof p.endDateMs === "number"
+                                    ? toDateInputValue(p.endDateMs)
+                                    : "";
+                                if (!start && !end) return null;
+                                const accrued = computeAccruedAmount(p, Date.now());
+                                const currency = p.currency?.trim() ? p.currency.trim().toUpperCase() : "";
+                                return (
+                                  <div className="mt-1 text-xs text-zinc-600">
+                                    {start ? `Start: ${start}` : ""}
+                                    {start && end ? " · " : ""}
+                                    {end ? `End: ${end}` : ""}
+                                    {accrued !== null ? (
+                                      <span className="ml-2 text-zinc-800">
+                                        · To-date: <span className="font-semibold">{currency ? `${currency} ` : ""}{accrued}</span>
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                );
+                              })()}
                               {p.notes ? <div className="mt-1 text-xs text-zinc-700">{p.notes}</div> : null}
                             </div>
                             <div className="flex shrink-0 items-center gap-2">
@@ -2154,6 +2270,74 @@ export default function ContactDetailPage() {
                         />
                       </label>
                     </div>
+
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="block">
+                        <div className="text-xs font-medium text-zinc-700">
+                          Start date{purchaseDraft.cadence === "one_off" ? " (optional)" : " (recommended)"}
+                        </div>
+                        <input
+                          type="date"
+                          value={purchaseDraft.startDate}
+                          onChange={(e) => setPurchaseDraft((prev) => ({ ...prev, startDate: e.target.value }))}
+                          className="mt-1 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-400"
+                          aria-label="Subscription start date"
+                        />
+                      </label>
+                      <label className="block">
+                        <div className="text-xs font-medium text-zinc-700">
+                          End date (optional)
+                        </div>
+                        <input
+                          type="date"
+                          value={purchaseDraft.endDate}
+                          onChange={(e) => setPurchaseDraft((prev) => ({ ...prev, endDate: e.target.value }))}
+                          className="mt-1 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-400"
+                          aria-label="Subscription end date"
+                        />
+                      </label>
+                    </div>
+
+                    {(() => {
+                      const nowMs = Date.now();
+                      const startMs = fromDateInputValue(purchaseDraft.startDate);
+                      const endMs = fromDateInputValue(purchaseDraft.endDate);
+                      const amountRaw = purchaseDraft.amountInput.trim().replace(/,/g, "");
+                      const parsedAmount = amountRaw.length ? Number(amountRaw) : NaN;
+                      const amountOk = Number.isFinite(parsedAmount) && parsedAmount > 0;
+                      if (!amountOk) return null;
+
+                      const temp: ContactPurchase = {
+                        id: "preview",
+                        stage: purchaseStage,
+                        cadence: purchaseDraft.cadence,
+                        name: purchaseDraft.name || "Preview",
+                        amount: parsedAmount,
+                        currency: purchaseDraft.currency.trim().toUpperCase() || undefined,
+                        ...(startMs !== null ? { startDateMs: startMs } : {}),
+                        ...(endMs !== null ? { endDateMs: endMs } : {}),
+                      };
+
+                      const accrued = computeAccruedAmount(temp, nowMs);
+                      if (accrued === null) return null;
+                      const currency = temp.currency?.trim() ? temp.currency.trim().toUpperCase() : "—";
+                      return (
+                        <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-700">
+                          <span className="font-medium text-zinc-900">To-date:</span>{" "}
+                          {currency !== "—" ? (
+                            <span className="font-semibold">{currency} {accrued}</span>
+                          ) : (
+                            <span className="font-semibold">{accrued}</span>
+                          )}
+                          {purchaseDraft.cadence !== "one_off" ? (
+                            <span className="text-zinc-500">
+                              {" "}
+                              (if no end date, counts up to today)
+                            </span>
+                          ) : null}
+                        </div>
+                      );
+                    })()}
 
                     <label className="block">
                       <div className="text-xs font-medium text-zinc-700">Notes (optional)</div>
