@@ -35,6 +35,10 @@ type RevenueStats = {
   isTruncated: boolean;
   actual: { lines: RevenueLine[]; pricedItems: number; contactsWithItems: number };
   potential: { lines: RevenueLine[]; pricedItems: number; contactsWithItems: number };
+  currentMrr: { lines: RevenueLine[]; pricedItems: number; contactsWithItems: number };
+  currentArr: { lines: RevenueLine[]; pricedItems: number; contactsWithItems: number };
+  possibleMrr: { lines: RevenueLine[]; pricedItems: number; contactsWithItems: number };
+  possibleArr: { lines: RevenueLine[]; pricedItems: number; contactsWithItems: number };
 };
 
 type CaptureWithContact = {
@@ -117,13 +121,38 @@ const computeAccruedAmount = (p: ContactPurchase, nowMs: number): number | null 
   return amount * events;
 };
 
+const isActiveNow = (p: ContactPurchase, nowMs: number): boolean => {
+  const startMs = typeof (p as any)?.startDateMs === "number" ? (p as any).startDateMs : null;
+  const endMs = typeof (p as any)?.endDateMs === "number" ? (p as any).endDateMs : null;
+  if (startMs !== null && startMs > nowMs) return false;
+  if (endMs !== null && endMs < nowMs) return false;
+  return true;
+};
+
+const addToCurrencyTotal = (map: Map<string, number>, currency: string, amount: number) => {
+  map.set(currency, (map.get(currency) ?? 0) + amount);
+};
+
 const computeRevenue = (contacts: ContactDoc[]): RevenueStats => {
+  const nowMs = Date.now();
   const actualTotals = new Map<string, number>();
   const potentialTotals = new Map<string, number>();
+  const currentMrrTotals = new Map<string, number>();
+  const currentArrTotals = new Map<string, number>();
+  const possibleMrrTotals = new Map<string, number>();
+  const possibleArrTotals = new Map<string, number>();
   let actualItems = 0;
   let potentialItems = 0;
+  let currentMrrItems = 0;
+  let currentArrItems = 0;
+  let possibleMrrItems = 0;
+  let possibleArrItems = 0;
   let contactsWithActual = 0;
   let contactsWithPotential = 0;
+  let contactsWithCurrentMrr = 0;
+  let contactsWithCurrentArr = 0;
+  let contactsWithPossibleMrr = 0;
+  let contactsWithPossibleArr = 0;
 
   for (const c of contacts) {
     const status = `${(c as any)?.leadStatus ?? ""}`.trim();
@@ -135,10 +164,14 @@ const computeRevenue = (contacts: ContactDoc[]): RevenueStats => {
 
     let hasActual = false;
     let hasPotential = false;
+    let hasCurrentMrr = false;
+    let hasCurrentArr = false;
+    let hasPossibleMrr = false;
+    let hasPossibleArr = false;
 
     for (const p of list) {
-      const amount = computeAccruedAmount(p, Date.now());
-      if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) continue;
+      const accrued = computeAccruedAmount(p, nowMs);
+      if (typeof accrued !== "number" || !Number.isFinite(accrued) || accrued <= 0) continue;
 
       const currencyRaw = typeof (p as any)?.currency === "string" ? (p as any).currency : "";
       const currency = currencyRaw.trim().toUpperCase() || "—";
@@ -146,20 +179,59 @@ const computeRevenue = (contacts: ContactDoc[]): RevenueStats => {
       if (p.stage === "converted") {
         // Only count as "actual revenue" when the contact is marked Converted
         if (status !== "customer") continue;
-        actualTotals.set(currency, (actualTotals.get(currency) ?? 0) + amount);
+        addToCurrencyTotal(actualTotals, currency, accrued);
         actualItems += 1;
         hasActual = true;
       } else if (p.stage === "possible") {
         // Only count as "potential" when the contact is Warm/Hot
         if (status !== "warm" && status !== "hot") continue;
-        potentialTotals.set(currency, (potentialTotals.get(currency) ?? 0) + amount);
+        addToCurrencyTotal(potentialTotals, currency, accrued);
         potentialItems += 1;
         hasPotential = true;
+      }
+
+      // Current/possible MRR/ARR uses the base subscription amount (not accrued),
+      // and only counts subscriptions active "now".
+      if (p.cadence === "monthly" || p.cadence === "yearly") {
+        if (!isActiveNow(p, nowMs)) continue;
+        const unitAmount = (p as any)?.amount;
+        if (typeof unitAmount !== "number" || !Number.isFinite(unitAmount) || unitAmount <= 0) continue;
+
+        const isConverted = p.stage === "converted" && status === "customer";
+        const isPossible = p.stage === "possible" && (status === "warm" || status === "hot");
+
+        if (p.cadence === "monthly") {
+          if (isConverted) {
+            addToCurrencyTotal(currentMrrTotals, currency, unitAmount);
+            currentMrrItems += 1;
+            hasCurrentMrr = true;
+          }
+          if (isConverted || isPossible) {
+            addToCurrencyTotal(possibleMrrTotals, currency, unitAmount);
+            possibleMrrItems += 1;
+            hasPossibleMrr = true;
+          }
+        } else {
+          if (isConverted) {
+            addToCurrencyTotal(currentArrTotals, currency, unitAmount);
+            currentArrItems += 1;
+            hasCurrentArr = true;
+          }
+          if (isConverted || isPossible) {
+            addToCurrencyTotal(possibleArrTotals, currency, unitAmount);
+            possibleArrItems += 1;
+            hasPossibleArr = true;
+          }
+        }
       }
     }
 
     if (hasActual) contactsWithActual += 1;
     if (hasPotential) contactsWithPotential += 1;
+    if (hasCurrentMrr) contactsWithCurrentMrr += 1;
+    if (hasCurrentArr) contactsWithCurrentArr += 1;
+    if (hasPossibleMrr) contactsWithPossibleMrr += 1;
+    if (hasPossibleArr) contactsWithPossibleArr += 1;
   }
 
   const toLines = (m: Map<string, number>): RevenueLine[] =>
@@ -172,6 +244,10 @@ const computeRevenue = (contacts: ContactDoc[]): RevenueStats => {
     isTruncated: contacts.length >= MAX_CONTACTS_FOR_REVENUE,
     actual: { lines: toLines(actualTotals), pricedItems: actualItems, contactsWithItems: contactsWithActual },
     potential: { lines: toLines(potentialTotals), pricedItems: potentialItems, contactsWithItems: contactsWithPotential },
+    currentMrr: { lines: toLines(currentMrrTotals), pricedItems: currentMrrItems, contactsWithItems: contactsWithCurrentMrr },
+    currentArr: { lines: toLines(currentArrTotals), pricedItems: currentArrItems, contactsWithItems: contactsWithCurrentArr },
+    possibleMrr: { lines: toLines(possibleMrrTotals), pricedItems: possibleMrrItems, contactsWithItems: contactsWithPossibleMrr },
+    possibleArr: { lines: toLines(possibleArrTotals), pricedItems: possibleArrItems, contactsWithItems: contactsWithPossibleArr },
   };
 };
 
@@ -434,6 +510,66 @@ export default function DashboardPage() {
         </div>
 
         <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+          <div className="text-sm text-zinc-600">Current MRR</div>
+          <div className="mt-2 text-2xl font-semibold tracking-tight">
+            {revenueIsLoading
+              ? "…"
+              : revenue?.currentMrr.lines.length === 1
+                ? formatMoney(revenue.currentMrr.lines[0]!.total, revenue.currentMrr.lines[0]!.currency)
+                : revenue?.currentMrr.lines.length
+                  ? "Multiple"
+                  : "—"}
+          </div>
+          <div className="mt-2 text-xs text-zinc-600">
+            {revenueError
+              ? revenueError
+              : revenue?.currentMrr.lines.length
+                ? `${revenue.currentMrr.pricedItems} subs across ${revenue.currentMrr.contactsWithItems} contacts`
+                : "Converted monthly subs only"}
+          </div>
+          {revenue?.currentMrr.lines.length && revenue.currentMrr.lines.length > 1 ? (
+            <div className="mt-2 space-y-1 text-xs text-zinc-700">
+              {revenue.currentMrr.lines.slice(0, 3).map((l) => (
+                <div key={`cmrr:${l.currency}`} className="flex items-center justify-between gap-2">
+                  <div className="truncate">{l.currency}</div>
+                  <div className="shrink-0 font-medium">{formatMoney(l.total, l.currency)}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+          <div className="text-sm text-zinc-600">Current ARR</div>
+          <div className="mt-2 text-2xl font-semibold tracking-tight">
+            {revenueIsLoading
+              ? "…"
+              : revenue?.currentArr.lines.length === 1
+                ? formatMoney(revenue.currentArr.lines[0]!.total, revenue.currentArr.lines[0]!.currency)
+                : revenue?.currentArr.lines.length
+                  ? "Multiple"
+                  : "—"}
+          </div>
+          <div className="mt-2 text-xs text-zinc-600">
+            {revenueError
+              ? revenueError
+              : revenue?.currentArr.lines.length
+                ? `${revenue.currentArr.pricedItems} subs across ${revenue.currentArr.contactsWithItems} contacts`
+                : "Converted yearly subs only"}
+          </div>
+          {revenue?.currentArr.lines.length && revenue.currentArr.lines.length > 1 ? (
+            <div className="mt-2 space-y-1 text-xs text-zinc-700">
+              {revenue.currentArr.lines.slice(0, 3).map((l) => (
+                <div key={`carr:${l.currency}`} className="flex items-center justify-between gap-2">
+                  <div className="truncate">{l.currency}</div>
+                  <div className="shrink-0 font-medium">{formatMoney(l.total, l.currency)}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="rounded-2xl border border-zinc-200 bg-white p-4">
           <div className="text-sm text-zinc-600">Actual revenue (Converted)</div>
           <div className="mt-2 text-2xl font-semibold tracking-tight">
             {revenueIsLoading ? "…" : revenue?.actual.lines.length === 1 ? formatMoney(revenue.actual.lines[0]!.total, revenue.actual.lines[0]!.currency) : revenue?.actual.lines.length ? "Multiple" : "—"}
@@ -458,6 +594,71 @@ export default function DashboardPage() {
         </div>
 
         <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+          <div className="text-sm text-zinc-600">Possible MRR</div>
+          <div className="mt-2 text-2xl font-semibold tracking-tight">
+            {revenueIsLoading
+              ? "…"
+              : revenue?.possibleMrr.lines.length === 1
+                ? formatMoney(revenue.possibleMrr.lines[0]!.total, revenue.possibleMrr.lines[0]!.currency)
+                : revenue?.possibleMrr.lines.length
+                  ? "Multiple"
+                  : "—"}
+          </div>
+          <div className="mt-2 text-xs text-zinc-600">
+            {revenueError
+              ? revenueError
+              : revenue?.possibleMrr.lines.length
+                ? `${revenue.possibleMrr.pricedItems} subs across ${revenue.possibleMrr.contactsWithItems} contacts`
+                : "Current + Warm/Hot monthly subs"}
+          </div>
+          {revenue?.possibleMrr.lines.length && revenue.possibleMrr.lines.length > 1 ? (
+            <div className="mt-2 space-y-1 text-xs text-zinc-700">
+              {revenue.possibleMrr.lines.slice(0, 3).map((l) => (
+                <div key={`pmrr:${l.currency}`} className="flex items-center justify-between gap-2">
+                  <div className="truncate">{l.currency}</div>
+                  <div className="shrink-0 font-medium">{formatMoney(l.total, l.currency)}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+          <div className="text-sm text-zinc-600">Possible ARR</div>
+          <div className="mt-2 text-2xl font-semibold tracking-tight">
+            {revenueIsLoading
+              ? "…"
+              : revenue?.possibleArr.lines.length === 1
+                ? formatMoney(revenue.possibleArr.lines[0]!.total, revenue.possibleArr.lines[0]!.currency)
+                : revenue?.possibleArr.lines.length
+                  ? "Multiple"
+                  : "—"}
+          </div>
+          <div className="mt-2 text-xs text-zinc-600">
+            {revenueError
+              ? revenueError
+              : revenue?.possibleArr.lines.length
+                ? `${revenue.possibleArr.pricedItems} subs across ${revenue.possibleArr.contactsWithItems} contacts`
+                : "Current + Warm/Hot yearly subs"}
+          </div>
+          {revenue?.possibleArr.lines.length && revenue.possibleArr.lines.length > 1 ? (
+            <div className="mt-2 space-y-1 text-xs text-zinc-700">
+              {revenue.possibleArr.lines.slice(0, 3).map((l) => (
+                <div key={`parr:${l.currency}`} className="flex items-center justify-between gap-2">
+                  <div className="truncate">{l.currency}</div>
+                  <div className="shrink-0 font-medium">{formatMoney(l.total, l.currency)}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {revenue?.isTruncated ? (
+            <div className="mt-2 text-[11px] text-zinc-500">
+              Scanned first {MAX_CONTACTS_FOR_REVENUE} contacts for revenue.
+            </div>
+          ) : null}
+        </div>
+
+        <div className="rounded-2xl border border-zinc-200 bg-white p-4">
           <div className="text-sm text-zinc-600">Potential revenue (Warm/Hot)</div>
           <div className="mt-2 text-2xl font-semibold tracking-tight">
             {revenueIsLoading ? "…" : revenue?.potential.lines.length === 1 ? formatMoney(revenue.potential.lines[0]!.total, revenue.potential.lines[0]!.currency) : revenue?.potential.lines.length ? "Multiple" : "—"}
@@ -477,11 +678,6 @@ export default function DashboardPage() {
                   <div className="shrink-0 font-medium">{formatMoney(l.total, l.currency)}</div>
                 </div>
               ))}
-            </div>
-          ) : null}
-          {revenue?.isTruncated ? (
-            <div className="mt-2 text-[11px] text-zinc-500">
-              Scanned first {MAX_CONTACTS_FOR_REVENUE} contacts for revenue.
             </div>
           ) : null}
         </div>
